@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "template": {
+    "isTemplate": false,
+    "source": "0000-002-ModuleReady",
+    "strictValidationArgument": "-Instantiation"
+  },
+  "project": {
+    "id": "0000-002",
+    "name": "ModuleReady",
+    "title": "OneHistory \u5BBF\u4E3B\u6A21\u5757\u8D77\u6B65\u6A21\u677F",
+    "kind": [
+      "template",
+      "software",
+      "appshell-module"
+    ],
+    "status": "template",
+    "version": "0.1.1",
+    "branch": "main"
+  },
+  "paths": {
+    "activeRoots": [
+      "b-Office",
+      "b-Code/HistoryExemplum",
+      "b-Code/HistoryExemplum.Tests",
+      "b-Code"
+    ],
+    "sourceRoots": [
+      "b-Code/HistoryExemplum",
+      "b-Code/HistoryExemplum.Tests"
+    ],
+    "generatedRoots": [
+      "b-Code/**/bin",
+      "b-Code/**/obj",
+      "z-Publish"
+    ],
+    "archiveRoots": [
+      "z-Publish/history"
+    ],
+    "releaseRoots": [
+      "z-Publish"
+    ],
+    "allowedRootDirectoryPrefixes": [
+      "a-",
+      "b-",
+      "z-"
+    ]
+  },
+  "documents": {
+    "conventions": "b-Office/\u73B0\u884C\u7EA6\u5B9A.md"
+  },
+  "commands": {
+    "setup": null,
+    "build": "dotnet build .\\b-Code\\HistoryExemplum\\HistoryExemplum.csproj -c Release -p:NuGetAudit=false",
+    "test": "dotnet run --project .\\b-Code\\HistoryExemplum.Tests\\HistoryExemplum.Tests.csproj -c Release -p:NuGetAudit=false",
+    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\b-Code\\Test-ProjectContract.ps1 -Instantiation",
+    "run": null,
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\b-Code\\HistoryExemplum\\eng\\Build-HistoryExemplumPackage.ps1"
+  },
+  "externalDependencies": [
+    "HistoryVulcan 5.1.2 \u6216\u66F4\u65B0\u7684\u53D1\u5E03\u5FEB\u7167\uFF1AC:\\OneHistory\\HistoryClio\\2026-023-HistoryVulcan\\z-Publish",
+    ".NET 8 SDK \u4E0E Windows Desktop Runtime\uFF08\u76EE\u6807\u6846\u67B6 net8.0-windows\uFF09",
+    "HistoryAurora\uFF08\u53EF\u9009\uFF09\uFF1A\u9875\u9762\u7531\u5B83\u6309\u63CF\u8FF0\u534F\u8BAE\u6E32\u67D3\uFF1B\u6CA1\u6709\u5B83\u6307\u4EE4\u7167\u6837\u80FD\u5728\u63A7\u5236\u53F0\u6267\u884C"
+  ],
+  "contextExclusions": [
+    "z-Publish/**",
+    "**/bin/**",
+    "**/obj/**",
+    "**/node_modules/**",
+    "**/.vs/**",
+    "artifacts/**"
+  ],
+  "publish": {
+    "versionProps": "b-Code\\HistoryExemplum\\HistoryExemplumVersion.props",
+    "versionProperty": "HistoryExemplumVersion",
+    "sourceManifest": "b-Code\\HistoryExemplum\\module.manifest.json",
+    "package": {
+      "project": "b-Code\\HistoryExemplum\\HistoryExemplum.csproj",
+      "files": [
+        "HistoryExemplum.dll",
+        "HistoryExemplum.xml",
+        "module.manifest.json"
+      ]
+    },
+    "validation": [
+      {
+        "tool": "dotnet.exe",
+        "arguments": [
+          "run",
+          "--project",
+          "b-Code\\HistoryExemplum.Tests\\HistoryExemplum.Tests.csproj",
+          "-c",
+          "Release",
+          "-p:NuGetAudit=false"
+        ],
+        "description": "Run HistoryExemplum offline tests"
+      }
+    ]
+  }
+}
