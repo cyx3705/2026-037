@@ -2,17 +2,6 @@
 
 本文件适用于整个仓库。进入项目后先执行只读检查，再根据用户任务决定是否修改。
 
-<!-- template:usage -->
-## 模板模式
-
-`project.manifest.json` 中 `template.isTemplate` 为 `true` 时，本仓库仍是模板 `0000-002-ModuleReady`：
-
-- 示范模块 `HistoryExemplum` 与 `{{...}}` 占位符都是有意保留的；模板自身跑不带 `-Instantiation` 的合同检查。
-- 改模板时保证示范模块仍能构建、离线测试全过；新的踩坑经验写进 `b-Office/现行约定.md`，
-  能机械检查的同时加进 `b-Code/Test-ProjectContract.ps1`。
-- 派生仓第一件事是运行 `b-Code/New-ModuleFromTemplate.ps1`（步骤见 README），它会删掉本节。
-
-<!-- /template:usage -->
 ## 启动读取顺序
 
 1. 读取根目录 `project.manifest.json`，确认项目身份、状态、活动目录和可用命令。

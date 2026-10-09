@@ -1,7 +1,7 @@
 using System.Reflection;
 using BaseVariable;
 
-namespace HistoryExemplum;
+namespace HistoryFama;
 
 /// <summary>
 /// 模块身份。宿主按**全名**鸭子类型识别 <c>BaseVariable.ModuleInfoBase</c> 的公开非抽象子类，
@@ -13,12 +13,12 @@ public sealed class ModuleInfo : ModuleInfoBase
     /// 必须显式覆盖：缺省值是程序集名，而它同时是**指令域**。
     /// 程序集名与域一旦分家，域就会跟着程序集名跑。
     /// </summary>
-    public override string ModuleName => "HistoryExemplum";
+    public override string ModuleName => "HistoryFama";
 
     /// <summary>指令域前缀。</summary>
-    public string CommandPrefix => ExemplumIdentity.Domain;
+    public string CommandPrefix => FamaIdentity.Domain;
 
-    public override string Description => ExemplumIdentity.Description;
+    public override string Description => FamaIdentity.Description;
 
     public override string Author => "OneHistory";
 

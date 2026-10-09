@@ -6,28 +6,27 @@
     "strictValidationArgument": "-Instantiation"
   },
   "project": {
-    "id": "0000-002",
-    "name": "ModuleReady",
-    "title": "OneHistory \u5BBF\u4E3B\u6A21\u5757\u8D77\u6B65\u6A21\u677F",
+    "id": "2026-037",
+    "name": "HistoryFama",
+    "title": "HistoryFama MessageHub 前端：聚合消费各平台消息桥的统一 API",
     "kind": [
-      "template",
       "software",
       "appshell-module"
     ],
-    "status": "template",
-    "version": "0.1.1",
+    "status": "active",
+    "version": "1.0.0",
     "branch": "main"
   },
   "paths": {
     "activeRoots": [
       "b-Office",
-      "b-Code/HistoryExemplum",
-      "b-Code/HistoryExemplum.Tests",
+      "b-Code/HistoryFama",
+      "b-Code/HistoryFama.Tests",
       "b-Code"
     ],
     "sourceRoots": [
-      "b-Code/HistoryExemplum",
-      "b-Code/HistoryExemplum.Tests"
+      "b-Code/HistoryFama",
+      "b-Code/HistoryFama.Tests"
     ],
     "generatedRoots": [
       "b-Code/**/bin",
@@ -51,11 +50,11 @@
   },
   "commands": {
     "setup": null,
-    "build": "dotnet build .\\b-Code\\HistoryExemplum\\HistoryExemplum.csproj -c Release -p:NuGetAudit=false",
-    "test": "dotnet run --project .\\b-Code\\HistoryExemplum.Tests\\HistoryExemplum.Tests.csproj -c Release -p:NuGetAudit=false",
+    "build": "dotnet build .\\b-Code\\HistoryFama\\HistoryFama.csproj -c Release -p:NuGetAudit=false",
+    "test": "dotnet run --project .\\b-Code\\HistoryFama.Tests\\HistoryFama.Tests.csproj -c Release -p:NuGetAudit=false",
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\b-Code\\Test-ProjectContract.ps1 -Instantiation",
     "run": null,
-    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\b-Code\\HistoryExemplum\\eng\\Build-HistoryExemplumPackage.ps1"
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\b-Code\\HistoryFama\\eng\\Build-HistoryFamaPackage.ps1"
   },
   "externalDependencies": [
     "HistoryVulcan 5.1.2 \u6216\u66F4\u65B0\u7684\u53D1\u5E03\u5FEB\u7167\uFF1AC:\\OneHistory\\HistoryClio\\2026-023-HistoryVulcan\\z-Publish",
@@ -71,14 +70,14 @@
     "artifacts/**"
   ],
   "publish": {
-    "versionProps": "b-Code\\HistoryExemplum\\HistoryExemplumVersion.props",
-    "versionProperty": "HistoryExemplumVersion",
-    "sourceManifest": "b-Code\\HistoryExemplum\\module.manifest.json",
+    "versionProps": "b-Code\\HistoryFama\\HistoryFamaVersion.props",
+    "versionProperty": "HistoryFamaVersion",
+    "sourceManifest": "b-Code\\HistoryFama\\module.manifest.json",
     "package": {
-      "project": "b-Code\\HistoryExemplum\\HistoryExemplum.csproj",
+      "project": "b-Code\\HistoryFama\\HistoryFama.csproj",
       "files": [
-        "HistoryExemplum.dll",
-        "HistoryExemplum.xml",
+        "HistoryFama.dll",
+        "HistoryFama.xml",
         "module.manifest.json"
       ]
     },
@@ -88,12 +87,12 @@
         "arguments": [
           "run",
           "--project",
-          "b-Code\\HistoryExemplum.Tests\\HistoryExemplum.Tests.csproj",
+          "b-Code\\HistoryFama.Tests\\HistoryFama.Tests.csproj",
           "-c",
           "Release",
           "-p:NuGetAudit=false"
         ],
-        "description": "Run HistoryExemplum offline tests"
+        "description": "Run HistoryFama offline tests"
       }
     ]
   }

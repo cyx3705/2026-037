@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <!-- 版本的唯一真源。module.manifest.json 与根 project.manifest.json 必须同值，
+         打包脚本与合同检查会逐一比对——宿主对版本不一致的处理是静默跳过整个模块。 -->
+    <HistoryFamaVersion>1.0.0</HistoryFamaVersion>
+    <!-- 用了 IModuleContext.Environment（数据目录），那是 5.9.0 起给的；不碰 Log 与 RegisterFrontend。 -->
+    <MinimumHistoryVulcanVersion>5.9.0</MinimumHistoryVulcanVersion>
+    <VersionPrefix>$(HistoryFamaVersion)</VersionPrefix>
+    <Version>$(HistoryFamaVersion)</Version>
+    <AssemblyVersion>$(HistoryFamaVersion).0</AssemblyVersion>
+    <FileVersion>$(HistoryFamaVersion).0</FileVersion>
+    <InformationalVersion>$(HistoryFamaVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,713 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using HistoryFama;
+using HistoryVulcan.Core.Commands;
+using HistoryVulcan.Core.Modules;
+
+Console.OutputEncoding = Encoding.UTF8;
+
+// 全部离线。最后一组把打好的包交给已发布宿主的命令行 `--probe` 装一遍（宿主 5.9.0 起的统一契约）——
+// 版本漂移、manifest 写错、身份类缺失在宿主那边都是「静默跳过整个模块」，只有这样才能在出包前拦住。
+// 中间两组用标准库起一个假桥（TcpListener 说 HTTP/1.1），把契约回执的形状钉死，
+// 不依赖 2026-036-MessageHub 的容器、docker 或任何真桥。
+var tests = new (string Name, Func<Task> Run)[]
+{
+    ("command registration", Sync(TestCommandRegistration)),
+    ("page owner follows domain", Sync(TestPageOwner)),
+    ("buttons, actions and commands line up", Sync(TestPageWiring)),
+    ("versions agree", Sync(TestVersionsAgree)),
+    ("bridge config round-trips", Sync(TestBridgeConfig)),
+    ("page rows follow the contract", Sync(TestPageRows)),
+    ("bridge client speaks the contract", TestBridgeClient),
+    ("host loads the package", TestHostLoadsPackage),
+};
+
+var failed = 0;
+foreach (var test in tests)
+{
+    try
+    {
+        await test.Run();
+        Console.WriteLine($"PASS {test.Name}");
+    }
+    catch (Exception ex)
+    {
+        failed++;
+        Console.Error.WriteLine($"FAIL {test.Name}: {ex.Message}");
+    }
+}
+
+return failed == 0 ? 0 : 1;
+
+static Func<Task> Sync(Action test) => () =>
+{
+    test();
+    return Task.CompletedTask;
+};
+
+static Registrar Registry()
+{
+    var registry = new Registrar();
+    HistoryFamaModule.Register(registry, new FamaState(null));
+    return registry;
+}
+
+static void TestCommandRegistration()
+{
+    var registry = Registry();
+    var domain = FamaIdentity.Domain;
+    string[] expected =
+    [
+        domain + ".bridge.list",
+        domain + ".bridge.add",
+        domain + ".bridge.remove",
+        domain + ".bridge.test",
+        domain + ".conv.list",
+        domain + ".msg.list",
+        domain + ".msg.send",
+        domain + ".ui.describe",
+        domain + ".ui.actions",
+        domain + ".ui.data",
+    ];
+    foreach (var name in expected)
+    {
+        True(registry.TryGet(name, out var descriptor), $"未注册 {name}");
+        Equal(domain, descriptor!.Domain!);
+    }
+
+    Equal(expected.Length, registry.All.Count(d => d.Name.StartsWith(domain + ".", StringComparison.Ordinal)));
+
+    foreach (var method in new[] { "describe", "actions", "data" })
+    {
+        True(registry.TryGet(domain + ".ui." + method, out var ui), $"缺少 {domain}.ui.{method}");
+        True(ui!.Readonly, $"{domain}.ui.{method} 必须只读");
+        True(ui.HiddenReason is not null, $"{domain}.ui.{method} 是界面内部协议，必须 HiddenReason");
+    }
+
+    // 写配置的两条不能标只读，发送要人点头
+    foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove" })
+    {
+        registry.TryGet(name, out var write);
+        True(!write!.Readonly, $"{name} 会改配置，不能标只读");
+    }
+
+    registry.TryGet(domain + ".msg.send", out var send);
+    Equal(CommandLevel.Ask, send!.Level);
+    True(send.ConfirmPrompt is not null, "发消息必须给确认文案");
+
+    // 只读的查询指令才允许投影到 MCP，这里逐条钉住
+    foreach (var name in new[] { domain + ".bridge.list", domain + ".bridge.test", domain + ".conv.list", domain + ".msg.list" })
+    {
+        registry.TryGet(name, out var query);
+        True(query!.Readonly, $"{name} 是只读查询");
+    }
+}
+
+static void TestPageOwner()
+{
+    // Aurora 的判据：owner = "History" + 首字母大写的指令域；对不上整页被静默拒收。
+    var expected = "History" + char.ToUpperInvariant(FamaIdentity.Domain[0]) + FamaIdentity.Domain[1..];
+    Equal(expected, FamaIdentity.PageOwner);
+
+    using var description = JsonDocument.Parse(FamaPage.Describe());
+    var root = description.RootElement;
+    Equal(expected, root.GetProperty("owner").GetString()!);
+    Equal(1, root.GetProperty("schemaVersion").GetInt32());
+    foreach (var page in root.GetProperty("pages").EnumerateArray())
+    {
+        Equal(expected, page.GetProperty("scene").GetString()!);
+        Equal(FamaPage.PageId, page.GetProperty("id").GetString()!);
+    }
+
+    using var actions = JsonDocument.Parse(FamaPage.Actions());
+    Equal(expected, actions.RootElement.GetProperty("owner").GetString()!);
+}
+
+static void TestPageWiring()
+{
+    var registry = Registry();
+    using var actions = JsonDocument.Parse(FamaPage.Actions());
+    var declared = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var action in actions.RootElement.GetProperty("actions").EnumerateArray())
+    {
+        var id = action.GetProperty("id").GetString()!;
+        var command = action.GetProperty("command").GetString()!;
+        True(declared.Add(id), $"动作 id 重复：{id}");
+        if (command.StartsWith(FamaIdentity.Domain + ".", StringComparison.Ordinal))
+            True(registry.TryGet(command, out _), $"动作 {id} 指向未注册的指令 {command}");
+        else
+            True(command.Contains('.'), $"动作 {id} 的指令名不像三段式：{command}");
+    }
+
+    using var description = JsonDocument.Parse(FamaPage.Describe());
+    var nodes = Descendants(description.RootElement).ToList();
+    foreach (var button in nodes.Where(node => node.TryGetProperty("kind", out var kind) && kind.GetString() == "button"))
+    {
+        var action = button.GetProperty("action").GetString()!;
+        True(declared.Contains(action), $"按钮指向未声明的动作 {action}");
+    }
+
+    foreach (var cell in nodes.Where(node => node.TryGetProperty("cellAction", out _)))
+    {
+        var action = cell.GetProperty("cellAction").GetString()!;
+        True(declared.Contains(action), $"可点单元格指向未声明的动作 {action}");
+    }
+
+    foreach (var source in nodes.Where(node => node.TryGetProperty("dataSource", out _)))
+    {
+        var command = source.GetProperty("dataSource").GetProperty("command").GetString()!;
+        True(registry.TryGet(command, out _), $"表格取数指令未注册：{command}");
+    }
+
+    // 会话表发布通道、消息表按通道取数、发送动作按通道取目标：断一条界面就联动不起来
+    var conversation = Find(nodes, FamaPage.ConversationTableId);
+    Equal(FamaPage.ConversationChannel, conversation.GetProperty("channel").GetString()!);
+
+    var message = Find(nodes, FamaPage.MessageTableId);
+    var args = message.GetProperty("dataSource").GetProperty("args");
+    Equal("{selection." + FamaPage.ConversationChannel + ".platform}", args.GetProperty("bridge").GetString()!);
+    Equal("{selection." + FamaPage.ConversationChannel + ".conversation}", args.GetProperty("conversation").GetString()!);
+
+    var send = actions.RootElement.GetProperty("actions").EnumerateArray()
+        .First(action => action.GetProperty("id").GetString() == FamaPage.SendActionId);
+    var sendArgs = send.GetProperty("args");
+    Equal("{selection." + FamaPage.ConversationChannel + ".conversation}", sendArgs.GetProperty("conversation").GetString()!);
+    Equal("{" + FamaPage.TextBoxId + "}", sendArgs.GetProperty("text").GetString()!);
+}
+
+static void TestVersionsAgree()
+{
+    var manifest = ReadManifest(Path.Combine(AppContext.BaseDirectory, "module.manifest.json"));
+    Equal(FamaIdentity.Name, manifest.GetProperty("name").GetString()!);
+    Equal(FamaIdentity.Name + ".dll", manifest.GetProperty("artifact").GetString()!);
+    Equal(new ModuleInfo().Version, manifest.GetProperty("version").GetString()!);
+    Equal(FamaIdentity.Name, new ModuleInfo().ModuleName);
+    Equal(FamaIdentity.Description, manifest.GetProperty("description").GetString()!);
+}
+
+static void TestBridgeConfig()
+{
+    var directory = NewScratch("config");
+    try
+    {
+        var state = new FamaState(new FakeContext(directory));
+        Equal(Path.Combine(directory, "bridges.json"), state.ConfigPath);
+        Equal(0, state.Bridges().Count);
+        True(!File.Exists(state.ConfigPath), "没配过就不该凭空写出配置文件");
+
+        state.AddBridge("qq", "qq", "QQ", "http://127.0.0.1:8010/", "tok-qq");
+        state.AddBridge("dingtalk", "dingtalk", "钉钉", "http://127.0.0.1:8011", null);
+        var bridges = state.Bridges();
+        Equal(2, bridges.Count);
+        Equal("http://127.0.0.1:8010", bridges[0].BaseUrl);
+        Equal("tok-qq", bridges[0].Token);
+        Equal("", bridges[1].Token);
+
+        // 省略 token 是「别动它」，不是「清空它」
+        state.AddBridge("qq", null, null, "http://127.0.0.1:8010", null);
+        Equal("tok-qq", state.Bridges()[0].Token);
+        Equal("QQ", state.Bridges()[0].Title);
+
+        // 大小写不敏感地命中同一条，不会写出第二份
+        state.AddBridge("QQ", "qq", "QQ", "http://127.0.0.1:8010", null);
+        Equal(2, state.Bridges().Count);
+
+        state.RemoveBridge("dingtalk");
+        Equal(1, state.Bridges().Count);
+
+        var threw = false;
+        try
+        {
+            state.RemoveBridge("nope");
+        }
+        catch (FamaBridgeException)
+        {
+            threw = true;
+        }
+
+        True(threw, "移除不存在的桥要报错，不能静默成功");
+
+        // 新实例从磁盘读回来的内容要和内存里一致（配置文件是唯一真源）
+        var reloaded = new FamaState(new FakeContext(directory));
+        Equal(1, reloaded.Bridges().Count);
+        Equal("qq", reloaded.Bridges()[0].Id);
+        Equal("tok-qq", reloaded.Bridges()[0].Token);
+
+        // 残缺配置（没地址）不参与连接
+        File.WriteAllText(state.ConfigPath,
+            """{"schemaVersion":1,"bridges":[{"id":"broken","baseUrl":""},{"id":"ok","baseUrl":"http://127.0.0.1:9"}]}""",
+            new UTF8Encoding(false));
+        var filtered = new FamaState(new FakeContext(directory));
+        Equal(1, filtered.Bridges().Count);
+        Equal("ok", filtered.Bridges()[0].Id);
+    }
+    finally
+    {
+        Cleanup(directory);
+    }
+}
+
+static void TestPageRows()
+{
+    var conversations = new[]
+    {
+        new FamaConversation("qq", "qq:group:1", "通知群", "group", 124, 1791537512673, "第一行\n第二行", 0),
+        new FamaConversation("dingtalk", "76768247043", "某群", "group", 0, 0, "", 0),
+    };
+    var rows = FamaState.ConversationRows(conversations);
+    Equal(2, rows.Count);
+    Equal("qq|qq:group:1", rows[0]["id"]);
+    Equal("群聊", rows[0]["kind"]);
+    Equal("124", rows[0]["members"]);
+    Equal("第一行 第二行", rows[0]["last"]);
+    True(rows[0]["time"].Length > 0, "有效时间戳要格式化出来");
+    Equal("", rows[1]["time"]);
+    Equal("", rows[1]["members"]);
+
+    var messages = new[]
+    {
+        new FamaMessage("qq", "m1", "qq:group:1", 1791537512673, "in", "7", "李四", "text", "大家好", 0),
+        new FamaMessage("qq", "m2", "qq:group:1", 1791537513000, "in", "8", "", "image", "[图片]", 1),
+        new FamaMessage("qq", "out-1", "qq:group:1", 1791537514000, "out", "", "", "text", "收到", 0),
+    };
+    var messageRows = FamaState.MessageRows(messages);
+    Equal(3, messageRows.Count);
+    Equal("李四", messageRows[0]["who"]);
+    Equal("8", messageRows[1]["who"]);           // 名字空时用 id 兜底，不显示空白
+    Equal("我", messageRows[2]["who"]);          // 自己发的
+    True(messageRows[1]["text"].Contains("1 个附件", StringComparison.Ordinal), "有附件要标出来");
+    Equal("qq|out-1", messageRows[2]["id"]);
+}
+
+static async Task TestBridgeClient()
+{
+    using var stub = new StubBridge();
+    var client = new FamaBridgeClient();
+    var bridge = new FamaBridgeConfig
+    {
+        Id = "qq", Platform = "qq", Title = "QQ",
+        BaseUrl = "http://127.0.0.1:" + stub.Port, Token = "test-token",
+    };
+
+    var meta = await client.MetaAsync(bridge, CancellationToken.None);
+    Equal("qq", meta.Platform);
+    Equal("10001", meta.Account);
+    Equal("2.0.0", meta.BridgeVersion);
+    True(meta.Receive && meta.Send && meta.SendAttachments && meta.Realtime, "能力要读全");
+    Equal(2, meta.Conversations);
+    Equal(3, meta.Messages);
+    Equal(1000L, meta.MinTsMs);
+    Equal(2000L, meta.MaxTsMs);
+
+    var conversations = await client.ConversationsAsync(bridge, "通知", "group", 20, CancellationToken.None);
+    Equal(2, conversations.Count);
+    Equal("qq:group:1", conversations[0].ConversationId);
+    Equal("通知群", conversations[0].Title);
+    Equal(124, conversations[0].Members);
+    Equal("private", conversations[1].Kind);
+    Equal(3, conversations[1].Unread);
+
+    var messages = await client.MessagesAsync(bridge, "qq:group:1", 50, CancellationToken.None);
+    Equal(2, messages.Count);
+    Equal("m1", messages[0].MessageId);
+    Equal("李四", messages[0].SenderName);
+    Equal("", messages[1].SenderName);
+    Equal(1, messages[1].Attachments);
+    Equal("image", messages[1].Kind);
+
+    var sent = await client.SendAsync(bridge, "qq:group:1", "收到", CancellationToken.None);
+    Equal("out-1", sent.MessageId);
+    Equal("out", sent.Direction);
+    Equal("收到", sent.Text);
+
+    // 契约里的错误码要原样透出来，指令层才能按 unsupported 说人话
+    var unsupported = false;
+    try
+    {
+        await client.SendAsync(bridge, "dingtalk:76768247043", "在吗", CancellationToken.None);
+    }
+    catch (FamaBridgeException ex)
+    {
+        unsupported = true;
+        Equal("unsupported", ex.Code);
+    }
+
+    True(unsupported, "钉钉桥返回 unsupported 时客户端要抛出带该码的异常");
+
+    // 鉴权头、查询串、POST 体都要按契约发出去
+    True(stub.Requests.Any(r => r.Contains("Authorization: Bearer test-token", StringComparison.Ordinal)),
+        "每个请求都要带 Bearer token：" + string.Join(" | ", stub.Requests));
+    True(stub.Requests.Any(r => r.StartsWith("GET /api/v1/conversations?", StringComparison.Ordinal)
+                                && r.Contains("q=%E9%80%9A%E7%9F%A5", StringComparison.Ordinal)
+                                && r.Contains("kind=group", StringComparison.Ordinal)
+                                && r.Contains("limit=20", StringComparison.Ordinal)),
+        "会话查询串要带 limit/q/kind：" + string.Join(" | ", stub.Requests));
+    True(stub.Requests.Any(r => r.Contains("POST /api/v1/conversations/qq%3Agroup%3A1/messages", StringComparison.Ordinal)
+                                && r.Contains("\"text\":\"收到\"", StringComparison.Ordinal)),
+        "发送要用 POST 并带 text：" + string.Join(" | ", stub.Requests));
+
+    // 连不上时给一句能读懂的话，不要把裸异常抛给用户
+    var offline = new FamaBridgeConfig { Id = "gone", BaseUrl = "http://127.0.0.1:" + FreePort(), Token = "" };
+    var reported = false;
+    try
+    {
+        await client.MetaAsync(offline, CancellationToken.None);
+    }
+    catch (FamaBridgeException ex)
+    {
+        reported = true;
+        True(ex.Message.Contains("连不上桥 gone", StringComparison.Ordinal), ex.Message);
+    }
+
+    True(reported, "连不上桥要报 FamaBridgeException");
+}
+
+static async Task TestHostLoadsPackage()
+{
+    var root = Path.Combine(Path.GetTempPath(), FamaIdentity.Name + ".Tests", Guid.NewGuid().ToString("N"));
+    var package = Path.Combine(root, FamaIdentity.Name);
+    Directory.CreateDirectory(package);
+    try
+    {
+        var manifest = ReadManifest(Path.Combine(AppContext.BaseDirectory, "module.manifest.json"));
+        foreach (var file in new[]
+                 {
+                     "module.manifest.json",
+                     manifest.GetProperty("artifact").GetString()!,
+                     manifest.GetProperty("docs").GetString()!,
+                 })
+        {
+            var from = Path.Combine(AppContext.BaseDirectory, file);
+            True(File.Exists(from), $"构建产物缺少 {file}");
+            File.Copy(from, Path.Combine(package, file));
+        }
+
+        WriteChecksums(package);
+
+        var list = await Probe(package, FamaIdentity.Domain + ".bridge.list");
+        var module = list.GetProperty("data").GetProperty("module");
+        True(module.GetProperty("attached").GetBoolean(),
+            "宿主没有接上模块：" + string.Join("；", module.GetProperty("attachFailures").EnumerateArray().Select(item => item.GetString()))
+            + "；诊断：" + string.Join("；", list.GetProperty("diagnostics").EnumerateArray().Select(item => item.GetString())));
+        Equal(FamaIdentity.Name, module.GetProperty("name").GetString());
+        Equal(10, module.GetProperty("commandCount").GetInt32());
+        var result = list.GetProperty("data").GetProperty("result");
+        True(result.GetProperty("success").GetBoolean(), result.GetProperty("message").GetString() ?? "");
+
+        // 干净数据目录里没有任何桥：查询类指令要老老实实返回空，而不是报错
+        var empty = await Probe(package, FamaIdentity.Domain + ".conv.list");
+        True(empty.GetProperty("data").GetProperty("result").GetProperty("success").GetBoolean(),
+            empty.GetProperty("data").GetProperty("result").GetRawText());
+    }
+    finally
+    {
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+    }
+}
+
+// 调已发布宿主的 `HistoryVulcan.Cli.exe --probe`：宿主根目录在构建时写进本程序集（见 csproj 的 HistoryVulcanHostRoot）。
+static async Task<JsonElement> Probe(string package, string command)
+{
+    var hostRoot = Assembly.GetExecutingAssembly()
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .FirstOrDefault(item => item.Key == "HistoryVulcanHostRoot")?.Value;
+    if (string.IsNullOrEmpty(hostRoot))
+        throw new InvalidOperationException("构建时没有写入 HistoryVulcanHostRoot。");
+    var cli = Path.Combine(hostRoot, "HistoryVulcan.Cli.exe");
+    True(File.Exists(cli), $"找不到宿主命令行：{cli}（宿主 5.9.0 起提供 --probe）");
+
+    var start = new ProcessStartInfo(cli)
+    {
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        StandardOutputEncoding = Encoding.UTF8,
+    };
+    foreach (var argument in new[] { "--probe", package, "--format", "json", "--cli" }.Concat(command.Split(' ')))
+        start.ArgumentList.Add(argument);
+
+    using var process = Process.Start(start)!;
+    var output = await process.StandardOutput.ReadToEndAsync();
+    var error = await process.StandardError.ReadToEndAsync();
+    await process.WaitForExitAsync();
+    True(output.TrimStart().StartsWith('{'), $"--probe 没有输出 JSON（退出码 {process.ExitCode}）：{output}{error}");
+    using var document = JsonDocument.Parse(output);
+    return document.RootElement.Clone();
+}
+
+static JsonElement ReadManifest(string path)
+{
+    using var document = JsonDocument.Parse(File.ReadAllText(path));
+    return document.RootElement.Clone();
+}
+
+// 与 eng/Build-*Package.ps1 同一格式：大写十六进制、两个空格、正斜杠路径、无 BOM。
+static void WriteChecksums(string package)
+{
+    var lines = Directory.GetFiles(package, "*", SearchOption.AllDirectories)
+        .Where(path => !Path.GetFileName(path).Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase))
+        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+        .Select(path => $"{Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))}  "
+                        + Path.GetRelativePath(package, path).Replace('\\', '/'));
+    File.WriteAllLines(Path.Combine(package, "SHA256SUMS"), lines, new UTF8Encoding(false));
+}
+
+static IEnumerable<JsonElement> Descendants(JsonElement element)
+{
+    if (element.ValueKind == JsonValueKind.Object)
+    {
+        yield return element;
+        foreach (var property in element.EnumerateObject())
+            foreach (var child in Descendants(property.Value))
+                yield return child;
+    }
+    else if (element.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var item in element.EnumerateArray())
+            foreach (var child in Descendants(item))
+                yield return child;
+    }
+}
+
+static JsonElement Find(IReadOnlyList<JsonElement> nodes, string id)
+    => nodes.FirstOrDefault(node => node.TryGetProperty("id", out var value) && value.GetString() == id);
+
+static string NewScratch(string purpose)
+{
+    var path = Path.Combine(AppContext.BaseDirectory, "scratch", purpose + "-" + Guid.NewGuid().ToString("N")[..8]);
+    Directory.CreateDirectory(path);
+    return path;
+}
+
+static void Cleanup(string path)
+{
+    try
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, recursive: true);
+    }
+    catch (IOException)
+    {
+    }
+}
+
+static int FreePort()
+{
+    var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    listener.Stop();
+    return port;
+}
+
+static void True(bool condition, string message)
+{
+    if (!condition)
+        throw new InvalidOperationException(message);
+}
+
+static void Equal<T>(T expected, T actual)
+{
+    if (!EqualityComparer<T>.Default.Equals(expected, actual))
+        throw new InvalidOperationException($"期望 {expected}，实际 {actual}");
+}
+
+/// <summary>
+/// 模块登记口的测试替身：只记下登记了哪些指令。宿主 6.0.0 起注册表是宿主内部类，
+/// 登记口 ICommandRegistrar 就是模块能看到的全部；来源由宿主盖章，这里不再核对。
+/// </summary>
+sealed class Registrar : ICommandRegistrar
+{
+    private readonly Dictionary<string, CommandDescriptor> _commands = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyCollection<CommandDescriptor> All => _commands.Values;
+
+    public void Register(CommandDescriptor descriptor)
+    {
+        if (!_commands.TryAdd(descriptor.Name, descriptor))
+            throw new InvalidOperationException($"重复登记 {descriptor.Name}");
+    }
+
+    public bool TryGet(string name, out CommandDescriptor? descriptor) => _commands.TryGetValue(name, out descriptor);
+}
+
+/// <summary>上下文的测试替身：只给数据目录与一条什么都不做的总线。</summary>
+sealed class FakeContext(string dataDirectory) : IModuleContext
+{
+    public ICommandBus Bus { get; } = new FakeBus();
+
+    public IModuleEnvironment Environment { get; } = new FakeEnvironment(dataDirectory);
+
+    public void RegisterCommands(Action<ICommandRegistrar> configure) => configure(new Registrar());
+}
+
+sealed class FakeBus : ICommandBus
+{
+    public List<string> Executed { get; } = [];
+
+    public Task<CommandResult> ExecuteAsync(string text, string source, CancellationToken cancellation = default)
+    {
+        Executed.Add(text);
+        return Task.FromResult(CommandResult.Ok("ok"));
+    }
+
+    public Task<CommandResult> InvokeAsync(string text, string source, CancellationToken cancellation = default)
+        => Task.FromResult(CommandResult.Ok("ok"));
+
+    public bool RequestConfirmation(string prompt) => true;
+}
+
+sealed class FakeEnvironment(string dataDirectory) : IModuleEnvironment
+{
+    public string ModuleName => FamaIdentity.Name;
+
+    public string DataDirectory { get; } = dataDirectory;
+
+    public string PackageDirectory => DataDirectory;
+
+    public HostRunMode RunMode => HostRunMode.Probe;
+
+    public string HostVersion => "6.1.1";
+}
+
+/// <summary>
+/// 假桥：用 TcpListener 说最小可用的 HTTP/1.1，回执形状照 b-Code-Bridge.md。
+/// 不用 HttpListener（非管理员注册前缀要 urlacl），所以这里自己读请求行与 Content-Length。
+/// </summary>
+sealed class StubBridge : IDisposable
+{
+    private const string MetaJson =
+        """{"ok":true,"data":{"platform":"qq","account":"10001","bridge_version":"2.0.0","capabilities":{"receive":true,"send":true,"send_attachments":true,"realtime":true,"history":true,"unread":false},"counts":{"conversations":2,"messages":3},"range":{"min_ts_ms":1000,"max_ts_ms":2000}}}""";
+
+    private const string ConversationsJson =
+        """{"ok":true,"data":{"items":[{"platform":"qq","conversation_id":"qq:group:1","title":"通知群","kind":"group","members":124,"last_ts_ms":2000,"last_text":"最后一条","unread":0},{"platform":"qq","conversation_id":"qq:private:2","title":"张三","kind":"private","members":null,"last_ts_ms":1500,"last_text":"在吗","unread":3}],"has_more":false}}""";
+
+    private const string MessagesJson =
+        """{"ok":true,"data":{"items":[{"platform":"qq","message_id":"m1","conversation_id":"qq:group:1","ts_ms":1000,"direction":"in","sender_id":"7","sender_name":"李四","kind":"text","text":"大家好","attachments":[]},{"platform":"qq","message_id":"m2","conversation_id":"qq:group:1","ts_ms":2000,"direction":"in","sender_id":"8","sender_name":"","kind":"image","text":"[图片]","attachments":[{"name":"a.png","content_type":"image/png","size":10,"url":"/api/v1/attachments/x.png"}]}],"has_more":false}}""";
+
+    private const string SentJson =
+        """{"ok":true,"data":{"platform":"qq","message_id":"out-1","conversation_id":"qq:group:1","ts_ms":3000,"direction":"out","sender_id":"","sender_name":"","kind":"text","text":"收到","attachments":[]}}""";
+
+    private const string UnsupportedJson =
+        """{"ok":false,"error":{"code":"unsupported","message":"dingtalk 桥当前不支持发送"}}""";
+
+    private readonly TcpListener _listener;
+    private readonly List<string> _requests = [];
+    private readonly object _gate = new();
+
+    public StubBridge()
+    {
+        _listener = new TcpListener(IPAddress.Loopback, 0);
+        _listener.Start();
+        Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+        _ = Task.Run(AcceptLoopAsync);
+    }
+
+    public int Port { get; }
+
+    public IReadOnlyList<string> Requests
+    {
+        get
+        {
+            lock (_gate)
+                return _requests.ToList();
+        }
+    }
+
+    public void Dispose() => _listener.Stop();
+
+    private async Task AcceptLoopAsync()
+    {
+        while (true)
+        {
+            TcpClient client;
+            try
+            {
+                client = await _listener.AcceptTcpClientAsync();
+            }
+            catch (Exception)
+            {
+                return; // 监听器被 Dispose
+            }
+
+            _ = Task.Run(() => ServeAsync(client));
+        }
+    }
+
+    private async Task ServeAsync(TcpClient client)
+    {
+        using (client)
+        {
+            var stream = client.GetStream();
+            var buffer = new byte[8192];
+            using var received = new MemoryStream();
+
+            var headerEnd = -1;
+            var contentLength = 0;
+            while (true)
+            {
+                var read = await stream.ReadAsync(buffer);
+                if (read <= 0)
+                    return;
+                received.Write(buffer, 0, read);
+                var text = Encoding.ASCII.GetString(received.GetBuffer(), 0, (int)received.Length);
+                headerEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                if (headerEnd < 0)
+                    continue;
+                contentLength = text[..headerEnd].Split("\r\n")
+                    .Where(line => line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    .Select(line => int.TryParse(line.Split(':')[1].Trim(), out var parsed) ? parsed : 0)
+                    .FirstOrDefault();
+                if (received.Length >= headerEnd + 4 + contentLength)
+                    break;
+            }
+
+            var head = Encoding.UTF8.GetString(received.GetBuffer(), 0, headerEnd);
+            var body = Encoding.UTF8.GetString(received.GetBuffer(), headerEnd + 4, contentLength);
+            var lines = head.Split("\r\n");
+            var requestLine = lines[0].Split(' ');
+            var method = requestLine[0];
+            var path = requestLine[1];
+
+            lock (_gate)
+            {
+                _requests.Add($"{method} {path} | "
+                              + string.Join(" | ", lines.Skip(1).Where(line =>
+                                  line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase)))
+                              + $" | {body}");
+            }
+
+            var payload = Respond(method, path);
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            var responseHead = "HTTP/1.1 200 OK\r\n"
+                               + "Content-Type: application/json; charset=utf-8\r\n"
+                               + $"Content-Length: {bytes.Length}\r\n"
+                               + "Connection: close\r\n\r\n";
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(responseHead));
+            await stream.WriteAsync(bytes);
+            await stream.FlushAsync();
+        }
+    }
+
+    private static string Respond(string method, string path)
+    {
+        if (path.StartsWith("/api/v1/meta", StringComparison.Ordinal))
+            return MetaJson;
+        if (path.StartsWith("/api/v1/conversations?", StringComparison.Ordinal))
+            return ConversationsJson;
+        if (path.StartsWith("/api/v1/conversations/", StringComparison.Ordinal) && path.Contains("/messages", StringComparison.Ordinal))
+        {
+            if (method == "POST")
+                return path.Contains("dingtalk", StringComparison.Ordinal) ? UnsupportedJson : SentJson;
+            return MessagesJson;
+        }
+
+        return """{"ok":false,"error":{"code":"not_found","message":"没有这个端点"}}""";
+    }
+}
