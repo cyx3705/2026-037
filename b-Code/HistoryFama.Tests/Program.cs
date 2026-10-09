@@ -53,7 +53,8 @@ static Func<Task> Sync(Action test) => () =>
 static Registrar Registry()
 {
     var registry = new Registrar();
-    HistoryFamaModule.Register(registry, new FamaState(null));
+    var state = new FamaState(null);
+    HistoryFamaModule.Register(registry, state, new FamaLive(null, state));
     return registry;
 }
 
@@ -70,6 +71,8 @@ static void TestCommandRegistration()
         domain + ".conv.list",
         domain + ".msg.list",
         domain + ".msg.send",
+        domain + ".recv.auto",
+        domain + ".recv.refresh",
         domain + ".ui.describe",
         domain + ".ui.actions",
         domain + ".ui.data",
@@ -89,8 +92,8 @@ static void TestCommandRegistration()
         True(ui.HiddenReason is not null, $"{domain}.ui.{method} 是界面内部协议，必须 HiddenReason");
     }
 
-    // 写配置的两条不能标只读，发送要人点头
-    foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove" })
+    // 写配置、拨开关、重连的几条不能标只读，发送要人点头
+    foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove", domain + ".recv.auto", domain + ".recv.refresh" })
     {
         registry.TryGet(name, out var write);
         True(!write!.Readonly, $"{name} 会改配置，不能标只读");
@@ -118,11 +121,17 @@ static void TestPageOwner()
     var root = description.RootElement;
     Equal(expected, root.GetProperty("owner").GetString()!);
     Equal(1, root.GetProperty("schemaVersion").GetInt32());
+    var ids = new List<string>();
     foreach (var page in root.GetProperty("pages").EnumerateArray())
     {
         Equal(expected, page.GetProperty("scene").GetString()!);
-        Equal(FamaPage.PageId, page.GetProperty("id").GetString()!);
+        ids.Add(page.GetProperty("id").GetString()!);
     }
+
+    // 两个窗口：左边通讯录、中间消息；页 id 小写无空格
+    Equal(string.Join(",", FamaPage.ContactsPageId, FamaPage.MessagesPageId), string.Join(",", ids));
+    foreach (var id in ids)
+        True(id == id.ToLowerInvariant() && !id.Contains(' '), $"页 id 必须小写无空格：{id}");
 
     using var actions = JsonDocument.Parse(FamaPage.Actions());
     Equal(expected, actions.RootElement.GetProperty("owner").GetString()!);
@@ -152,6 +161,12 @@ static void TestPageWiring()
         True(declared.Contains(action), $"按钮指向未声明的动作 {action}");
     }
 
+    foreach (var toggle in nodes.Where(node => node.TryGetProperty("kind", out var kind) && kind.GetString() == "switch"))
+    {
+        var action = toggle.GetProperty("commitAction").GetString()!;
+        True(declared.Contains(action), $"开关指向未声明的动作 {action}");
+    }
+
     foreach (var cell in nodes.Where(node => node.TryGetProperty("cellAction", out _)))
     {
         var action = cell.GetProperty("cellAction").GetString()!;
@@ -164,18 +179,20 @@ static void TestPageWiring()
         True(registry.TryGet(command, out _), $"表格取数指令未注册：{command}");
     }
 
-    // 会话表发布通道、消息表按通道取数、发送动作按通道取目标：断一条界面就联动不起来
+    // 通讯录发布通道、消息表按通道取数、发送动作按通道取目标：断一条两页就联动不起来。
+    // 找桥必须用会话行的 bridge 列（配置 id），不能用 platform——两者只在 id 恰好等于平台名时才碰巧一致。
     var conversation = Find(nodes, FamaPage.ConversationTableId);
     Equal(FamaPage.ConversationChannel, conversation.GetProperty("channel").GetString()!);
 
     var message = Find(nodes, FamaPage.MessageTableId);
     var args = message.GetProperty("dataSource").GetProperty("args");
-    Equal("{selection." + FamaPage.ConversationChannel + ".platform}", args.GetProperty("bridge").GetString()!);
+    Equal("{selection." + FamaPage.ConversationChannel + ".bridge}", args.GetProperty("bridge").GetString()!);
     Equal("{selection." + FamaPage.ConversationChannel + ".conversation}", args.GetProperty("conversation").GetString()!);
 
     var send = actions.RootElement.GetProperty("actions").EnumerateArray()
         .First(action => action.GetProperty("id").GetString() == FamaPage.SendActionId);
     var sendArgs = send.GetProperty("args");
+    Equal("{selection." + FamaPage.ConversationChannel + ".bridge}", sendArgs.GetProperty("bridge").GetString()!);
     Equal("{selection." + FamaPage.ConversationChannel + ".conversation}", sendArgs.GetProperty("conversation").GetString()!);
     Equal("{" + FamaPage.TextBoxId + "}", sendArgs.GetProperty("text").GetString()!);
 }
@@ -256,12 +273,25 @@ static void TestPageRows()
 {
     var conversations = new[]
     {
-        new FamaConversation("qq", "qq:group:1", "通知群", "group", 124, 1791537512673, "第一行\n第二行", 0),
-        new FamaConversation("dingtalk", "76768247043", "某群", "group", 0, 0, "", 0),
+        // 桥 id 故意与平台名不同：行里必须带配置 id，取数与发送才找得到桥
+        new FamaConversation("qq", "qq:group:1", "通知群", "group", 124, 1791537512673, "第一行\n第二行", 0)
+            { Bridge = "qq-work" },
+        new FamaConversation("dingtalk", "76768247043", "某群", "group", 0, 0, "", 0) { Bridge = "dingtalk" },
     };
     var rows = FamaState.ConversationRows(conversations);
     Equal(2, rows.Count);
-    Equal("qq|qq:group:1", rows[0]["id"]);
+    Equal("qq-work|qq:group:1", rows[0]["id"]);
+    Equal("qq-work", rows[0]["bridge"]);
+    Equal("qq", rows[0]["platform"]);
+    Equal("qq", rows[0]["source"]); // 没填桥标题时来源回退到平台名
+    Equal("", rows[1]["when"]);
+
+    // 通讯录短时间：今天只写时分，今年写月日，往年写日期
+    var now = new DateTimeOffset(2026, 10, 9, 18, 0, 0, TimeSpan.FromHours(8));
+    long Ms(int y, int mo, int d, int h, int mi) => new DateTimeOffset(y, mo, d, h, mi, 0, now.Offset).ToUnixTimeMilliseconds();
+    Equal("09:05", FamaState.ShortTime(Ms(2026, 10, 9, 9, 5), now));
+    Equal("10-08 23:59", FamaState.ShortTime(Ms(2026, 10, 8, 23, 59), now));
+    Equal("2025-12-31", FamaState.ShortTime(Ms(2025, 12, 31, 12, 0), now));
     Equal("群聊", rows[0]["kind"]);
     Equal("124", rows[0]["members"]);
     Equal("第一行 第二行", rows[0]["last"]);
@@ -395,7 +425,9 @@ static async Task TestHostLoadsPackage()
             "宿主没有接上模块：" + string.Join("；", module.GetProperty("attachFailures").EnumerateArray().Select(item => item.GetString()))
             + "；诊断：" + string.Join("；", list.GetProperty("diagnostics").EnumerateArray().Select(item => item.GetString())));
         Equal(FamaIdentity.Name, module.GetProperty("name").GetString());
-        Equal(10, module.GetProperty("commandCount").GetInt32());
+        // 宿主接上的指令数必须等于离线登记的数目：少了说明有指令在宿主那边登记失败
+        Equal(Registry().All.Count(d => d.Name.StartsWith(FamaIdentity.Domain + ".", StringComparison.Ordinal)),
+            module.GetProperty("commandCount").GetInt32());
         var result = list.GetProperty("data").GetProperty("result");
         True(result.GetProperty("success").GetBoolean(), result.GetProperty("message").GetString() ?? "");
 

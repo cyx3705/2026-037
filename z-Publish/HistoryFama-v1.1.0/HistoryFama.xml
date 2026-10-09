@@ -1,0 +1,340 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>HistoryFama</name>
+    </assembly>
+    <members>
+        <member name="T:HistoryFama.FamaBridgeException">
+            <summary>桥按契约回了一个错误码，或压根没连上。</summary>
+            <remarks>Code 取契约里的 error.code（unauthorized / not_found / unsupported / upstream_error…），
+            网络层失败是 transport。指令层把它翻成一句人话，不把原始英文吞掉。</remarks>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeException.#ctor(System.String,System.String)">
+            <summary>桥按契约回了一个错误码，或压根没连上。</summary>
+            <remarks>Code 取契约里的 error.code（unauthorized / not_found / unsupported / upstream_error…），
+            网络层失败是 transport。指令层把它翻成一句人话，不把原始英文吞掉。</remarks>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeException.Code">
+            <summary>契约里的 error.code；连不上桥时为 transport。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaBridgeClient">
+            <summary>
+            统一桥 HTTP API 的客户端。路径与字段照 b-Code-Bridge.md，字段只增不减，
+            所以这里一律按名字取、取不到给默认值，多出来的字段不理会。
+            </summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeClient.MetaAsync(HistoryFama.FamaBridgeConfig,System.Threading.CancellationToken)">
+            <summary>探活并取回桥的能力与计数。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeClient.ConversationsAsync(HistoryFama.FamaBridgeConfig,System.String,System.String,System.Int32,System.Threading.CancellationToken)">
+            <summary>取会话列表（按最后消息倒序）。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeClient.MessagesAsync(HistoryFama.FamaBridgeConfig,System.String,System.Int32,System.Threading.CancellationToken)">
+            <summary>取某个会话的消息（按时间升序）。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeClient.SendAsync(HistoryFama.FamaBridgeConfig,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>发一条文字消息，返回桥落库后的那条 out 消息。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeClient.Unwrap(HistoryFama.FamaBridgeConfig,System.String)">
+            <summary>拆契约的回执信封：成功取 data，失败按 error.code 抛出。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaIdentity">
+            <summary>模块名、指令域与页面身份的唯一权威源。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaIdentity.Name">
+            <summary>模块名：部署槽、manifest 与 <see cref="P:HistoryFama.ModuleInfo.ModuleName"/>。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaIdentity.Domain">
+            <summary>指令域：全部指令形如 <c>fama.&lt;类&gt;.&lt;方法&gt;</c>。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaIdentity.PageOwner">
+            <summary>
+            页面 owner 与场景 id。Aurora 按指令域反推（<c>"History" + 首字母大写的域</c>），
+            与模块名无关；对不上整页被静默拒收，只留一条 Warn。合同检查守着这条。
+            </summary>
+        </member>
+        <member name="F:HistoryFama.FamaIdentity.Description">
+            <summary>模块一句话描述，与 module.manifest.json 的 description 保持一致。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaLive">
+            <summary>
+            实时接收：对每个桥开一条 <c>/api/v1/events</c>（SSE），来了新消息就让 Aurora 重取通讯录与消息表。
+            </summary>
+            <remarks>
+            只负责「提醒界面去取」，不拿事件里的消息拼表——消息的真值仍以桥的查询接口为准，
+            所以漏掉一条事件也只是晚一点显示，不会显示错。断线按契约用 <c>since_ms=本桥最后一条 ts_ms</c> 重连。
+            「自动接收」关掉时所有连接都断开，只剩手动刷新。
+            </remarks>
+        </member>
+        <member name="F:HistoryFama.FamaLive.Debounce">
+            <summary>一阵消息连着来时只刷一次。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaLive.Silence">
+            <summary>契约里心跳约 20 秒一次；这么久一个字节都没收到，就当连接卡死，断开重连。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.#ctor(HistoryVulcan.Core.Modules.IModuleContext,HistoryFama.FamaState)">
+            <summary>离线测试传 null 上下文：不连任何桥。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaLive.Enabled">
+            <summary>「自动接收」开关；模块装上时默认开。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.SetEnabled(System.Boolean)">
+            <summary>拨开关，并按新状态重建连接；返回连着几个桥。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.Restart">
+            <summary>断开全部连接，按当前开关与桥配置重新连；返回连着几个桥（开关关着时为 0）。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.RefreshTablesAsync">
+            <summary>让 Aurora 重取通讯录与消息表；安静执行，不往控制台回显。页面没开着时刷不到，不算失败。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.Dispose">
+            <summary>模块卸载时由宿主调用：断开全部连接。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaLive.ReadStreamAsync(HistoryFama.FamaBridgeConfig,System.Action,System.Threading.CancellationToken)">
+            <summary>读一条 SSE 长连接直到它断；正常情况下永不返回，断了就抛出让外层重连。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaBridgeConfig">
+            <summary>
+            一个消息桥的接入配置。桥的地址与 token 由用户填；模块不认识任何平台细节，
+            只按统一契约（见 2026-036-MessageHub/b-Office/b-Code-Bridge.md）跟它说话。
+            </summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.Id">
+            <summary>本模块内唯一的桥标识，指令里用它指定桥，例如 qq。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.Platform">
+            <summary>平台名，与桥 /api/v1/meta 的 platform 一致，例如 qq。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.Title">
+            <summary>界面上显示的名字，例如 QQ。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.BaseUrl">
+            <summary>桥的根地址，例如 http://127.0.0.1:8010（不带 /api/v1）。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.Token">
+            <summary>桥的 Bearer token，与桥容器的 *_BRIDGE_TOKEN 一致。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.IsUsable">
+            <summary>地址与标识齐了才算能用；残缺的配置直接跳过，不让它去连。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeConfig.Display">
+            <summary>界面上怎么称呼这个桥。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaBridgeFile">
+            <summary>桥配置文件的整体形状；写进模块数据目录的 bridges.json。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeFile.SchemaVersion">
+            <summary>配置文件版本，当前只有 1。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaBridgeFile.Bridges">
+            <summary>已配置的桥。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaBridgeMeta">
+            <summary>桥 <c>/api/v1/meta</c> 的能力与计数，只取模块用得上的字段。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeMeta.#ctor(System.String,System.String,System.String,System.Boolean,System.Boolean,System.Boolean,System.Boolean,System.Int32,System.Int32,System.Int64,System.Int64)">
+            <summary>桥 <c>/api/v1/meta</c> 的能力与计数，只取模块用得上的字段。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaConversation">
+            <summary>一个会话（契约 3.1）。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaConversation.#ctor(System.String,System.String,System.String,System.String,System.Int32,System.Int64,System.String,System.Int32)">
+            <summary>一个会话（契约 3.1）。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaConversation.Bridge">
+            <summary>
+            会话来自本模块配置里的哪个桥（bridges.json 的 id），取数与发送都按它找桥。
+            不是契约字段：桥只知道自己的 platform，由聚合时填上。
+            </summary>
+        </member>
+        <member name="P:HistoryFama.FamaConversation.BridgeTitle">
+            <summary>那个桥在界面上的名字（bridges.json 的 title，例如 钉钉），通讯录的「来源」列用它。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaMessage">
+            <summary>一条消息（契约 3.2）。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaMessage.#ctor(System.String,System.String,System.String,System.Int64,System.String,System.String,System.String,System.String,System.String,System.Int32)">
+            <summary>一条消息（契约 3.2）。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaGather`1">
+            <summary>一次跨桥取数的结果：拿到的行，以及没答上来的桥各自的原因。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaGather`1.#ctor(System.Collections.Generic.IReadOnlyList{`0},System.Collections.Generic.IReadOnlyList{System.String})">
+            <summary>一次跨桥取数的结果：拿到的行，以及没答上来的桥各自的原因。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaGather`1.AllFailed">
+            <summary>没有桥答上来时，取数算失败。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaPage">
+            <summary>
+            Aurora 页面协议 V1：两页——左边「通讯录」（接收开关 + 刷新 + 会话表），中间「消息」（消息表 + 发送栏）。
+            </summary>
+            <remarks>
+            两页之间只靠选择通道 <see cref="F:HistoryFama.FamaPage.ConversationChannel"/> 接线：通讯录发布选中的会话，消息页按它取数、往它发。
+            三条规矩（离线测试守着）：owner 与 scene 用 <see cref="F:HistoryFama.FamaIdentity.PageOwner"/>；
+            每个按钮、开关与可点单元格的 action 都在 <see cref="M:HistoryFama.FamaPage.Actions"/> 里声明；
+            动作指向本模块自己的指令时，那条指令必须已注册（指向 aurora.* 的由 Aurora 自己保证）。
+            </remarks>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ContactsPageId">
+            <summary>通讯录页 id，也是 aurora.ui.show name= 要填的值。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.MessagesPageId">
+            <summary>消息页 id。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ReceivePanelId">
+            <summary>通讯录顶端的接收面板（开关 + 刷新）。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.SendPanelId">
+            <summary>消息页底部的发送栏。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ConversationTableId">
+            <summary>会话表（通讯录）节点 id；新消息到达时重取它。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.MessageTableId">
+            <summary>消息表节点 id；新消息到达与发送成功后重取它。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ConversationChannel">
+            <summary>通讯录发布选中行的通道；消息表按它取数，发送按它定目标。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.TextBoxId">
+            <summary>发送内容输入框的控件 id，动作参数里用 <c>{text}</c> 取它的当前值。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.AutoSwitchId">
+            <summary>自动接收开关的控件 id。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ViewBridge">
+            <summary>fama.ui.data 的三张视图；bridge 页面上已不用，留给控制台排障。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ViewConversation">
+            <summary>见 <see cref="F:HistoryFama.FamaPage.ViewBridge"/>。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.ViewMessage">
+            <summary>见 <see cref="F:HistoryFama.FamaPage.ViewBridge"/>。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.PageLimit">
+            <summary>页面一次取多少行；页面不需要翻页，够用即可。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.SendActionId">
+            <summary>发送动作 id。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.AutoActionId">
+            <summary>自动接收开关的动作 id。</summary>
+        </member>
+        <member name="F:HistoryFama.FamaPage.RefreshActionId">
+            <summary>手动刷新（重连实时流 + 重取两张表）的动作 id。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaPage.Describe(System.Boolean)">
+            <summary>页面描述；Aurora 拿它画页面。<paramref name="autoReceive"/> 是开关的初值。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaPage.Actions">
+            <summary>动作声明；按钮、开关、可点单元格都只绑这里的 id。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaState">
+            <summary>
+            模块的运行时状态与业务：管桥配置（bridges.json）、跨桥取数与发送、把契约记录翻成页面表格的行。
+            </summary>
+            <remarks>
+            自己**不存消息**：消息的真值在各平台的桥里，这里只做聚合与呈现，所以没有本地缓存要清理，
+            也不存在「模块里的历史跟桥对不上」这种状态。桥掉线时如实报告离线，不返回上次的旧数据。
+            </remarks>
+        </member>
+        <member name="M:HistoryFama.FamaState.#ctor(HistoryVulcan.Core.Modules.IModuleContext)">
+            <summary>宿主给的上下文；离线测试传 null，此时没有配置文件可读。</summary>
+        </member>
+        <member name="P:HistoryFama.FamaState.ConfigPath">
+            <summary>桥配置文件的绝对路径；没有上下文时是空串。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.Bridges">
+            <summary>已配置且可用的桥。配置文件坏了会抛出，不静默当没有桥。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.AddBridge(System.String,System.String,System.String,System.String,System.String)">
+            <summary>新增或更新一个桥；token 传空表示保留原来的，不覆盖。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.RemoveBridge(System.String)">
+            <summary>移除一个桥；没有这个桥就报错，不静默成功。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.MetaAsync(System.String,System.Threading.CancellationToken)">
+            <summary>探活一个桥。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.ConversationsAsync(System.String,System.String,System.String,System.Int32,System.Threading.CancellationToken)">
+            <summary>聚合各桥的会话；指定了桥就只问那一个。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.MessagesAsync(System.String,System.String,System.Int32,System.Threading.CancellationToken)">
+            <summary>取某个桥里某个会话的消息。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.StatusesAsync(System.Threading.CancellationToken)">
+            <summary>把一个桥的配置与在线状态列出来，供 bridge.list 与页面桥表使用。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.SendAsync(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>发一条文字消息，成功后刷新消息表。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.BridgeRowsAsync(System.Threading.CancellationToken)">
+            <summary>桥表：状态、账号与收发能力，离线时把原因写在能力列。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.ConversationRows(System.Collections.Generic.IEnumerable{HistoryFama.FamaConversation})">
+            <summary>会话表：跨桥汇总，按最后消息倒序。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.MessageRows(System.Collections.Generic.IEnumerable{HistoryFama.FamaMessage})">
+            <summary>消息表：某会话按时间升序。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.ShortTime(System.Int64,System.DateTimeOffset)">
+            <summary>通讯录窄栏用的短时间：今天只写时分，今年写月日时分，更早写日期。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaState.RefreshAsync(System.String)">
+            <summary>数据在界面之外被改了，让 Aurora 重取那一张表；页面没开着或没装 Aurora 时刷不到，不算失败。</summary>
+        </member>
+        <member name="T:HistoryFama.FamaBridgeStatus">
+            <summary>一个桥的配置加它的在线状态；Meta 为 null 表示没连上，原因在 Error 里。</summary>
+        </member>
+        <member name="M:HistoryFama.FamaBridgeStatus.#ctor(HistoryFama.FamaBridgeConfig,HistoryFama.FamaBridgeMeta,System.String)">
+            <summary>一个桥的配置加它的在线状态；Meta 为 null 表示没连上，原因在 Error 里。</summary>
+        </member>
+        <member name="T:HistoryFama.HistoryFamaModule">
+            <summary>
+            模块装配入口：桥管理、跨桥取数与发送，加 Aurora 页面协议三条指令（describe / actions / data）。
+            </summary>
+            <remarks>
+            模块只是桥的消费方：指令一律转成对统一桥 HTTP API 的调用（契约见 2026-036-MessageHub 的
+            b-Code-Bridge.md），自己不存消息、不解析平台格式。桥答不上来时如实失败并把原因带出来，
+            不返回上次的旧数据。
+            </remarks>
+        </member>
+        <member name="M:HistoryFama.HistoryFamaModule.Attach(HistoryVulcan.Core.Modules.IModuleContext)">
+            <summary>宿主在装载时注入权威指令总线与命令注册器；装上就开始实时接收。</summary>
+        </member>
+        <member name="M:HistoryFama.HistoryFamaModule.Dispose">
+            <summary>宿主卸载模块前调用：断开各桥的实时流，不留孤儿连接。</summary>
+        </member>
+        <member name="M:HistoryFama.HistoryFamaModule.WithProblems(System.String,System.Collections.Generic.IReadOnlyList{System.String})">
+            <summary>把「哪个桥没答上来」带进结果提要；总线对超长回执只留提要，所以只带第一条。</summary>
+        </member>
+        <member name="M:HistoryFama.HistoryFamaModule.GuardAsync(System.Func{System.Threading.Tasks.Task{HistoryVulcan.Core.Commands.CommandResult}})">
+            <summary>网络与契约错误翻成一句人话；不吞异常类型，方便排障。</summary>
+        </member>
+        <member name="T:HistoryFama.ModuleInfo">
+            <summary>
+            模块身份。宿主按**全名**鸭子类型识别 <c>BaseVariable.ModuleInfoBase</c> 的公开非抽象子类，
+            不靠引用相等，所以这个类必须存在且可被反射构造。
+            </summary>
+        </member>
+        <member name="P:HistoryFama.ModuleInfo.ModuleName">
+            <summary>
+            必须显式覆盖：缺省值是程序集名，而它同时是**指令域**。
+            程序集名与域一旦分家，域就会跟着程序集名跑。
+            </summary>
+        </member>
+        <member name="P:HistoryFama.ModuleInfo.CommandPrefix">
+            <summary>指令域前缀。</summary>
+        </member>
+        <member name="P:HistoryFama.ModuleInfo.Version">
+            <summary>
+            版本取自程序集而非字面量：宿主装载时比对 manifest 与本类的版本，
+            两者不一致会**静默跳过整个模块**，只在日志留一行 module.discovery 警告。
+            </summary>
+        </member>
+        <member name="P:HistoryFama.ModuleInfo.MainClassType">
+            <summary>指令一律经 <c>IModuleContext.RegisterCommands</c> 注册，不走反射投影。</summary>
+        </member>
+    </members>
+</doc>

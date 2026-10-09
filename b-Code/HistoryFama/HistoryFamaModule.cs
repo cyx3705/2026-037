@@ -11,19 +11,31 @@ namespace HistoryFama;
 /// b-Code-Bridge.md），自己不存消息、不解析平台格式。桥答不上来时如实失败并把原因带出来，
 /// 不返回上次的旧数据。
 /// </remarks>
-public sealed class HistoryFamaModule : IModuleContextAware
+public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
 {
     private const string Hidden = "Aurora 页面内部协议，不对远程消费面暴露";
 
-    /// <summary>宿主在装载时注入权威指令总线与命令注册器。</summary>
+    private FamaLive? _live;
+
+    /// <summary>宿主在装载时注入权威指令总线与命令注册器；装上就开始实时接收。</summary>
     public void Attach(IModuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var state = new FamaState(context);
-        context.RegisterCommands(registry => Register(registry, state));
+        var live = new FamaLive(context, state);
+        _live = live;
+        context.RegisterCommands(registry => Register(registry, state, live));
+        live.Restart();
     }
 
-    internal static void Register(ICommandRegistrar registry, FamaState state)
+    /// <summary>宿主卸载模块前调用：断开各桥的实时流，不留孤儿连接。</summary>
+    public void Dispose()
+    {
+        _live?.Dispose();
+        _live = null;
+    }
+
+    internal static void Register(ICommandRegistrar registry, FamaState state, FamaLive live)
     {
         const string domain = FamaIdentity.Domain;
 
@@ -102,6 +114,7 @@ public sealed class HistoryFamaModule : IModuleContextAware
                     context.GetString("title"),
                     context.RequireString("baseurl").Trim(),
                     context.GetString("token"));
+                live.Restart();
                 return Task.FromResult(CommandResult.Ok(message));
             }),
         });
@@ -124,8 +137,12 @@ public sealed class HistoryFamaModule : IModuleContextAware
                     Position = 0,
                 },
             ],
-            Handler = context => GuardAsync(() => Task.FromResult(
-                CommandResult.Ok(state.RemoveBridge(context.RequireString("id").Trim())))),
+            Handler = context => GuardAsync(() =>
+            {
+                var message = state.RemoveBridge(context.RequireString("id").Trim());
+                live.Restart();
+                return Task.FromResult(CommandResult.Ok(message));
+            }),
         });
 
         registry.Register(new CommandDescriptor
@@ -327,14 +344,64 @@ public sealed class HistoryFamaModule : IModuleContextAware
             }),
         });
 
-        registry.Register(Internal("describe", "返回消息中心页面描述", _ => Json(FamaPage.Describe())));
-        registry.Register(Internal("actions", "返回消息中心页面动作声明", _ => Json(FamaPage.Actions())));
+        registry.Register(new CommandDescriptor
+        {
+            Name = domain + ".recv.auto",
+            Domain = domain,
+            CommandClass = "recv",
+            Summary = "开关自动接收：开着时各桥来新消息就自动刷新通讯录与消息；关掉后断开实时流，只能手动刷新。",
+            Example = domain + ".recv.auto on=false",
+            Level = CommandLevel.Run,
+            Parameters =
+            [
+                new ParameterSpec
+                {
+                    Name = "on",
+                    Description = "true 打开、false 关闭；模块装上时默认打开，重装后回到打开。",
+                    Required = true,
+                    AllowedValues = ["true", "false"],
+                    Position = 0,
+                },
+            ],
+            Handler = context => GuardAsync(() =>
+            {
+                var on = context.RequireString("on").Trim();
+                if (!bool.TryParse(on, out var enabled))
+                    return Task.FromResult(CommandResult.Fail($"on 只能是 true 或 false，收到的是 {on}"));
+
+                var count = live.SetEnabled(enabled);
+                return Task.FromResult(CommandResult.Ok(enabled
+                    ? $"自动接收已打开，正在监听 {count} 个桥的实时流"
+                    : "自动接收已关闭，只在点「刷新」时更新"));
+            }),
+        });
+
+        registry.Register(new CommandDescriptor
+        {
+            Name = domain + ".recv.refresh",
+            Domain = domain,
+            CommandClass = "recv",
+            Summary = "重连各桥的实时流并重取通讯录与消息两张表；收消息卡住时用，自动接收关着时只重取不重连。",
+            Example = domain + ".recv.refresh",
+            Level = CommandLevel.Run,
+            Handler = _ => GuardAsync(async () =>
+            {
+                var count = live.Restart();
+                await live.RefreshTablesAsync().ConfigureAwait(false);
+                return CommandResult.Ok(live.Enabled
+                    ? $"已重连 {count} 个桥的实时流并刷新"
+                    : "已刷新（自动接收关着，没有重连实时流）");
+            }),
+        });
+
+        registry.Register(Internal("describe", "返回通讯录与消息两页的页面描述", _ => Json(FamaPage.Describe(live.Enabled))));
+        registry.Register(Internal("actions", "返回通讯录与消息两页的动作声明", _ => Json(FamaPage.Actions())));
         registry.Register(new CommandDescriptor
         {
             Name = domain + ".ui.data",
             Domain = domain,
             CommandClass = "ui",
-            Summary = "返回消息中心页面某一张表的行（桥 / 会话 / 消息）。",
+            Summary = "返回页面某一张表的行（桥 / 会话 / 消息）；桥表页面上已不用，留给排障。",
             Example = domain + ".ui.data view=conversation",
             Level = CommandLevel.Run,
             Readonly = true,

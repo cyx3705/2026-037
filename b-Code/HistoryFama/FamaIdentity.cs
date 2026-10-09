@@ -15,9 +15,6 @@ internal static class FamaIdentity
     /// </summary>
     public const string PageOwner = "HistoryFama";
 
-    /// <summary>用户看到的页面标题。</summary>
-    public const string PageTitle = "消息中心";
-
     /// <summary>模块一句话描述，与 module.manifest.json 的 description 保持一致。</summary>
     public const string Description = "MessageHub 前端：聚合消费各平台消息桥的统一 API";
 }

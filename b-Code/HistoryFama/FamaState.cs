@@ -150,8 +150,9 @@ internal sealed class FamaState
         {
             try
             {
-                items.AddRange(await _client.ConversationsAsync(bridge, query, kind, limit, cancellation)
-                    .ConfigureAwait(false));
+                var found = await _client.ConversationsAsync(bridge, query, kind, limit, cancellation)
+                    .ConfigureAwait(false);
+                items.AddRange(found.Select(item => item with { Bridge = bridge.Id, BridgeTitle = bridge.Display }));
             }
             catch (FamaBridgeException ex)
             {
@@ -245,8 +246,10 @@ internal sealed class FamaState
         IEnumerable<FamaConversation> conversations)
         => conversations.Select(item => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>
         {
-            // 行键必须非空且唯一：平台 + 会话主键
-            ["id"] = item.Platform + "|" + item.ConversationId,
+            // 行键必须非空且唯一：桥 + 会话主键（同一平台可以配两个桥，平台名不唯一）
+            ["id"] = item.Bridge + "|" + item.ConversationId,
+            ["bridge"] = item.Bridge,
+            ["source"] = string.IsNullOrWhiteSpace(item.BridgeTitle) ? item.Platform : item.BridgeTitle,
             ["platform"] = item.Platform,
             ["conversation"] = item.ConversationId,
             ["title"] = item.Title,
@@ -254,6 +257,7 @@ internal sealed class FamaState
             ["members"] = item.Members > 0 ? item.Members.ToString(CultureInfo.InvariantCulture) : "",
             ["last"] = OneLine(item.LastText),
             ["time"] = Timestamp(item.LastTsMs),
+            ["when"] = ShortTime(item.LastTsMs, DateTimeOffset.Now),
             ["unread"] = item.Unread > 0 ? item.Unread.ToString(CultureInfo.InvariantCulture) : "",
         }).ToList();
 
@@ -292,6 +296,18 @@ internal sealed class FamaState
         ? ""
         : DateTimeOffset.FromUnixTimeMilliseconds(tsMs).ToLocalTime()
             .ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+    /// <summary>通讯录窄栏用的短时间：今天只写时分，今年写月日时分，更早写日期。</summary>
+    internal static string ShortTime(long tsMs, DateTimeOffset now)
+    {
+        if (tsMs <= 0)
+            return "";
+        var local = DateTimeOffset.FromUnixTimeMilliseconds(tsMs).ToOffset(now.Offset);
+        var format = local.Date == now.Date ? "HH:mm"
+            : local.Year == now.Year ? "MM-dd HH:mm"
+            : "yyyy-MM-dd";
+        return local.ToString(format, CultureInfo.InvariantCulture);
+    }
 
     private static string OneLine(string text)
         => text.Replace('\r', ' ').Replace('\n', ' ').Trim();

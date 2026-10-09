@@ -74,7 +74,17 @@ internal sealed record FamaConversation(
     int Members,
     long LastTsMs,
     string LastText,
-    int Unread);
+    int Unread)
+{
+    /// <summary>
+    /// 会话来自本模块配置里的哪个桥（bridges.json 的 id），取数与发送都按它找桥。
+    /// 不是契约字段：桥只知道自己的 platform，由聚合时填上。
+    /// </summary>
+    public string Bridge { get; init; } = "";
+
+    /// <summary>那个桥在界面上的名字（bridges.json 的 title，例如 钉钉），通讯录的「来源」列用它。</summary>
+    public string BridgeTitle { get; init; } = "";
+}
 
 /// <summary>一条消息（契约 3.2）。</summary>
 internal sealed record FamaMessage(

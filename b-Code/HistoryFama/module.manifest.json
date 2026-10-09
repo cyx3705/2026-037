@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "type": "HistoryVulcan.Module",
   "name": "HistoryFama",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MessageHub 前端：聚合消费各平台消息桥的统一 API",
   "artifact": "HistoryFama.dll",
   "docs": "HistoryFama.xml",
