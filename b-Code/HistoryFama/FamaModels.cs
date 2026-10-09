@@ -4,7 +4,7 @@ namespace HistoryFama;
 
 /// <summary>
 /// 一个消息桥的接入配置。桥的地址与 token 由用户填；模块不认识任何平台细节，
-/// 只按统一契约（见 2026-036-MessageHub 的 b-Code-Bridge.md）跟它说话。
+/// 只按统一契约（见 2026-036-MessageHub/b-Office/b-Code-Bridge.md）跟它说话。
 /// </summary>
 internal sealed class FamaBridgeConfig
 {
