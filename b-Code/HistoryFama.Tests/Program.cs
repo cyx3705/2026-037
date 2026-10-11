@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
-using System.Security.Cryptography;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using HistoryFama;
@@ -20,6 +20,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("command registration", Sync(TestCommandRegistration)),
     ("page owner follows domain", Sync(TestPageOwner)),
     ("buttons, actions and commands line up", Sync(TestPageWiring)),
+    ("REQ-FAMA-001 messenger interface", Sync(TestMessengerInterface)),
     ("versions agree", Sync(TestVersionsAgree)),
     ("bridge config round-trips", Sync(TestBridgeConfig)),
     ("page rows follow the contract", Sync(TestPageRows)),
@@ -197,6 +198,33 @@ static void TestPageWiring()
     Equal("{" + FamaPage.TextBoxId + "}", sendArgs.GetProperty("text").GetString()!);
 }
 
+// REQ-FAMA-001：通讯式外观仍沿用桥 id 接线；搜索必须接到真实参数，输入换行不能折叠成会话摘要。
+static void TestMessengerInterface()
+{
+    using var description = JsonDocument.Parse(FamaPage.Describe());
+    var pages = description.RootElement.GetProperty("pages").EnumerateArray().ToList();
+    Equal(2, pages.Count);
+    Equal("通讯录", pages[0].GetProperty("title").GetString()!);
+    Equal("left", pages[0].GetProperty("placement").GetProperty("side").GetString()!);
+    Equal("消息", pages[1].GetProperty("title").GetString()!);
+    Equal("center", pages[1].GetProperty("placement").GetProperty("side").GetString()!);
+    var nodes = Descendants(description.RootElement).ToList();
+    var contacts = Find(nodes, FamaPage.ConversationTableId);
+    Equal("conversationList", contacts.GetProperty("type").GetString()!);
+    Equal("{selection.fama.search.value}", contacts.GetProperty("dataSource").GetProperty("args").GetProperty("q").GetString()!);
+    var query = Find(nodes, "query");
+    Equal("fama.search", query.GetProperty("channel").GetString()!);
+    var timeline = Find(nodes, FamaPage.MessageTableId);
+    Equal("chatTimeline", timeline.GetProperty("type").GetString()!);
+    Equal("{selection.fama.conversation.title}", timeline.GetProperty("source").GetString()!);
+    var input = Find(nodes, FamaPage.TextBoxId);
+    True(input.GetProperty("multiline").GetBoolean(), "聊天输入区必须支持换行");
+    True(!input.TryGetProperty("commitAction", out _), "回车和失焦不能发送消息");
+    var registry = Registry();
+    registry.TryGet("fama.ui.data", out var data);
+    True(data!.Parameters.Any(parameter => parameter.Name == "q"), "搜索词必须被取数指令接收");
+}
+
 static void TestVersionsAgree()
 {
     var manifest = ReadManifest(Path.Combine(AppContext.BaseDirectory, "module.manifest.json"));
@@ -301,13 +329,15 @@ static void TestPageRows()
 
     var messages = new[]
     {
-        new FamaMessage("qq", "m1", "qq:group:1", 1791537512673, "in", "7", "李四", "text", "大家好", 0),
+        new FamaMessage("qq", "m1", "qq:group:1", 1791537512673, "in", "7", "李四", "text", "大家好\n第二行", 0),
         new FamaMessage("qq", "m2", "qq:group:1", 1791537513000, "in", "8", "", "image", "[图片]", 1),
         new FamaMessage("qq", "out-1", "qq:group:1", 1791537514000, "out", "", "", "text", "收到", 0),
     };
     var messageRows = FamaState.MessageRows(messages);
     Equal(3, messageRows.Count);
     Equal("李四", messageRows[0]["who"]);
+    Equal("大家好\n第二行", messageRows[0]["text"]);
+    Equal("qq · 群聊 · 124 人", rows[0]["subtitle"]);
     Equal("8", messageRows[1]["who"]);           // 名字空时用 id 兜底，不显示空白
     Equal("我", messageRows[2]["who"]);          // 自己发的
     True(messageRows[1]["text"].Contains("1 个附件", StringComparison.Ordinal), "有附件要标出来");
@@ -417,9 +447,12 @@ static async Task TestHostLoadsPackage()
             File.Copy(from, Path.Combine(package, file));
         }
 
-        WriteChecksums(package);
+        // 宿主 7.0 只接受 nupkg；只在临时目录构造测试候选，不安装或修改运行区。
+        var archive = Path.Combine(root, FamaIdentity.Name + ".nupkg");
+        WriteNugetPackage(package, archive, manifest.GetProperty("version").GetString()!);
 
-        var list = await Probe(package, FamaIdentity.Domain + ".bridge.list");
+        var list = await Probe(archive, FamaIdentity.Domain + ".bridge.list");
+        True(list.GetProperty("data").ValueKind == JsonValueKind.Object, "宿主探针未返回装载数据：" + list.GetRawText());
         var module = list.GetProperty("data").GetProperty("module");
         True(module.GetProperty("attached").GetBoolean(),
             "宿主没有接上模块：" + string.Join("；", module.GetProperty("attachFailures").EnumerateArray().Select(item => item.GetString()))
@@ -432,7 +465,7 @@ static async Task TestHostLoadsPackage()
         True(result.GetProperty("success").GetBoolean(), result.GetProperty("message").GetString() ?? "");
 
         // 干净数据目录里没有任何桥：查询类指令要老老实实返回空，而不是报错
-        var empty = await Probe(package, FamaIdentity.Domain + ".conv.list");
+        var empty = await Probe(archive, FamaIdentity.Domain + ".conv.list");
         True(empty.GetProperty("data").GetProperty("result").GetProperty("success").GetBoolean(),
             empty.GetProperty("data").GetProperty("result").GetRawText());
     }
@@ -479,15 +512,17 @@ static JsonElement ReadManifest(string path)
     return document.RootElement.Clone();
 }
 
-// 与 eng/Build-*Package.ps1 同一格式：大写十六进制、两个空格、正斜杠路径、无 BOM。
-static void WriteChecksums(string package)
+// 与宿主实际 nupkg 相同：nuspec 与模块有效载荷平铺，不带运行区状态或数据。
+static void WriteNugetPackage(string package, string archive, string version)
 {
-    var lines = Directory.GetFiles(package, "*", SearchOption.AllDirectories)
-        .Where(path => !Path.GetFileName(path).Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase))
-        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-        .Select(path => $"{Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))}  "
-                        + Path.GetRelativePath(package, path).Replace('\\', '/'));
-    File.WriteAllLines(Path.Combine(package, "SHA256SUMS"), lines, new UTF8Encoding(false));
+    File.WriteAllText(Path.Combine(package, FamaIdentity.Name + ".nuspec"), $"""
+        <?xml version="1.0" encoding="utf-8"?>
+        <package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+          <metadata><id>{FamaIdentity.Name}</id><version>{version}</version>
+          <authors>HistoryVulcan</authors><description>{FamaIdentity.Name}</description></metadata>
+        </package>
+        """, new UTF8Encoding(false));
+    ZipFile.CreateFromDirectory(package, archive);
 }
 
 static IEnumerable<JsonElement> Descendants(JsonElement element)

@@ -253,6 +253,12 @@ internal sealed class FamaState
             ["platform"] = item.Platform,
             ["conversation"] = item.ConversationId,
             ["title"] = item.Title,
+            ["subtitle"] = string.Join(" · ", new[]
+            {
+                string.IsNullOrWhiteSpace(item.BridgeTitle) ? item.Platform : item.BridgeTitle,
+                KindText(item.Kind),
+                item.Members > 0 ? $"{item.Members} 人" : "",
+            }.Where(value => value.Length > 0)),
             ["kind"] = KindText(item.Kind),
             ["members"] = item.Members > 0 ? item.Members.ToString(CultureInfo.InvariantCulture) : "",
             ["last"] = OneLine(item.LastText),
@@ -270,7 +276,7 @@ internal sealed class FamaState
             ["who"] = item.Direction == "out"
                 ? "我"
                 : string.IsNullOrWhiteSpace(item.SenderName) ? item.SenderId : item.SenderName,
-            ["text"] = OneLine(item.Text) + (item.Attachments > 0
+            ["text"] = item.Text + (item.Attachments > 0
                 ? $"（{item.Attachments.ToString(CultureInfo.InvariantCulture)} 个附件）"
                 : ""),
             ["kind"] = item.Kind,

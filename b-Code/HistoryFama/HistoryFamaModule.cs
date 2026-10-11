@@ -394,14 +394,14 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             }),
         });
 
-        registry.Register(Internal("describe", "返回通讯录与消息两页的页面描述", _ => Json(FamaPage.Describe(live.Enabled))));
-        registry.Register(Internal("actions", "返回通讯录与消息两页的动作声明", _ => Json(FamaPage.Actions())));
+        registry.Register(Internal("describe", "返回会话卡片与气泡聊天两页的页面描述", _ => Json(FamaPage.Describe(live.Enabled))));
+        registry.Register(Internal("actions", "返回会话与消息两页的动作声明", _ => Json(FamaPage.Actions())));
         registry.Register(new CommandDescriptor
         {
             Name = domain + ".ui.data",
             Domain = domain,
             CommandClass = "ui",
-            Summary = "返回页面某一张表的行（桥 / 会话 / 消息）；桥表页面上已不用，留给排障。",
+            Summary = "返回页面行集（桥 / 会话卡片 / 气泡消息）；桥视图留给排障。",
             Example = domain + ".ui.data view=conversation",
             Level = CommandLevel.Run,
             Readonly = true,
@@ -411,7 +411,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                 new ParameterSpec
                 {
                     Name = "view",
-                    Description = "取哪张表：bridge 桥表、conversation 会话表、message 消息表。",
+                    Description = "取哪组行：bridge 桥、conversation 会话、message 消息。",
                     Required = false,
                     AllowedValues = [FamaPage.ViewBridge, FamaPage.ViewConversation, FamaPage.ViewMessage],
                     Position = 0,
@@ -425,7 +425,13 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                 new ParameterSpec
                 {
                     Name = "conversation",
-                    Description = "消息表必填的会话主键（conv.list 的 conversation 那列）；会话没选中时页面不会发这条取数。",
+                    Description = "消息视图必填的会话主键（conv.list 的 conversation 那列）；没选中时页面不取数。",
+                    Required = false,
+                },
+                new ParameterSpec
+                {
+                    Name = "q",
+                    Description = "会话标题搜索词；空串或省略时显示全部会话。",
                     Required = false,
                 },
             ],
@@ -442,7 +448,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                     case FamaPage.ViewConversation:
                     {
                         var gather = await state.ConversationsAsync(
-                            context.GetString("bridge"), null, null, FamaPage.PageLimit,
+                            context.GetString("bridge"), context.GetString("q"), null, FamaPage.PageLimit,
                             context.Cancellation).ConfigureAwait(false);
                         if (gather.AllFailed)
                             return CommandResult.Fail(string.Join("；", gather.Problems));

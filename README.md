@@ -20,11 +20,16 @@ Fama 是它们的**唯一消费方**：它不直连平台、不解析平台原�
 | --- | --- |
 | 角色 | 宿主模块（`kind=module`） |
 | 指令域 | `fama` |
-| 界面 | Aurora 描述式页面（场景 `HistoryFama`，页面标题「消息中心」） |
+| 界面 | Aurora 描述式页面（场景 `HistoryFama`；左侧独立「通讯录」页、中央独立「消息」页，分别可停靠） |
 | MCP 投影 | `readonly`（只读查询投影出去；发送要人确认，不投影） |
 | 版本与宿主下限 | [`HistoryFamaVersion.props`](./b-Code/HistoryFama/HistoryFamaVersion.props) |
 
 ## 能力
+
+REQ-FAMA-001：通讯式信息界面。会话列表支持标题搜索、摘要、来源、未读数和首字头像；
+消息按收发方向分左右气泡，保留多行正文并可选中复制，底部是多行输入和显式发送按钮。
+需要 HistoryAurora 1.34.0 或更新版的 `conversationList` / `chatTimeline` 组件。
+验收由离线页面接线检查与 Aurora 聊天组件合同测试共同覆盖。
 
 | 从哪进 | 指令 | 用途 |
 | --- | --- | --- |

@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace HistoryFama;
 
 /// <summary>
-/// Aurora 页面协议 V1：两页——左边「通讯录」（接收开关 + 刷新 + 会话表），中间「消息」（消息表 + 发送栏）。
+/// Aurora 页面协议 V1：左侧会话卡片和搜索，中间气泡消息时间线与多行发送栏（REQ-FAMA-001）。
 /// </summary>
 /// <remarks>
 /// 两页之间只靠选择通道 <see cref="ConversationChannel"/> 接线：通讯录发布选中的会话，消息页按它取数、往它发。
@@ -94,12 +94,11 @@ internal static class FamaPage
                         {
                             type = "panel",
                             id = ReceivePanelId,
-                            text = "接收",
+                            text = "消息中心",
                             rows = new object[]
                             {
                                 new
                                 {
-                                    mode = "even",
                                     widgets = new object[]
                                     {
                                         new
@@ -113,21 +112,21 @@ internal static class FamaPage
                                         new { kind = "button", action = RefreshActionId, text = "刷新", icon = "refresh-cw" },
                                     },
                                 },
+                                new
+                                {
+                                    widgets = new object[]
+                                    {
+                                        new { kind = "textbox", id = "query", label = "搜索", channel = "fama.search", value = "", flex = true },
+                                    },
+                                },
                             },
                         },
                         new
                         {
-                            type = "table",
+                            type = "conversationList",
                             id = ConversationTableId,
                             channel = ConversationChannel,
-                            dataSource = new { command = DataCommand, args = new { view = ViewConversation } },
-                            // 不用 "*"：Aurora 把星号列排到最后，会话就跑到时间后面去了；固定权重保住声明顺序
-                            columns = new object[]
-                            {
-                                new { key = "source", title = "来源", width = "45" },
-                                new { key = "title", title = "会话", width = "180" },
-                                new { key = "when", title = "时间", width = "100" },
-                            },
+                            dataSource = new { command = DataCommand, args = new { view = ViewConversation, q = "{selection.fama.search.value}" } },
                         },
                     },
                 },
@@ -146,8 +145,10 @@ internal static class FamaPage
                     {
                         new
                         {
-                            type = "table",
+                            type = "chatTimeline",
                             id = MessageTableId,
+                            source = Selected("title"),
+                            text = "消息",
                             dataSource = new
                             {
                                 command = DataCommand,
@@ -158,25 +159,26 @@ internal static class FamaPage
                                     ["conversation"] = Selected("conversation"),
                                 },
                             },
-                            columns = new object[]
-                            {
-                                new { key = "time", title = "时间", width = "120" },
-                                new { key = "who", title = "发送者", width = "100" },
-                                new { key = "text", title = "内容", width = "*" },
-                            },
                         },
                         new
                         {
                             type = "panel",
                             id = SendPanelId,
-                            text = "发送",
+                            text = "写消息",
                             rows = new object[]
                             {
                                 new
                                 {
                                     widgets = new object[]
                                     {
-                                        new { kind = "textbox", id = TextBoxId, label = "内容", flex = true },
+                                        new { kind = "textbox", id = TextBoxId, label = "", multiline = true, flex = true },
+                                    },
+                                },
+                                new
+                                {
+                                    widgets = new object[]
+                                    {
+                                        new { kind = "text", text = "Enter 换行 · 发送前确认收件人", flex = true },
                                         new
                                         {
                                             kind = "button",
