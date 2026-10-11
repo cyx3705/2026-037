@@ -56,6 +56,8 @@ internal static class FamaPage
     /// <summary>发送动作 id。</summary>
     public const string SendActionId = FamaIdentity.Domain + ".msg.send";
 
+    public const string ReadActionId = FamaIdentity.Domain + ".conv.read";
+
     /// <summary>自动接收开关的动作 id。</summary>
     public const string AutoActionId = FamaIdentity.Domain + ".recv.auto";
 
@@ -146,6 +148,7 @@ internal static class FamaPage
                         new
                         {
                             type = "chatTimeline",
+                            readAction = ReadActionId,
                             id = MessageTableId,
                             source = Selected("title"),
                             text = "消息",
@@ -203,6 +206,21 @@ internal static class FamaPage
         owner = FamaIdentity.PageOwner,
         actions = new object[]
         {
+            new
+            {
+                id = ReadActionId,
+                title = "本地已读",
+                command = ReadActionId,
+                args = new Dictionary<string, string>
+                {
+                    ["bridge"] = Selected("bridge"),
+                    ["conversation"] = Selected("conversation"),
+                    ["through"] = "{readThrough}",
+                    ["last"] = Selected("last_ts_ms"),
+                    ["unread"] = Selected("bridge_unread"),
+                },
+                summary = "成功显示最新消息后清除 Fama 本地未读，不影响平台端",
+            },
             new
             {
                 id = SendActionId,

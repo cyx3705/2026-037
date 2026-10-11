@@ -84,6 +84,9 @@ internal sealed record FamaConversation(
 
     /// <summary>那个桥在界面上的名字（bridges.json 的 title，例如 钉钉），通讯录的「来源」列用它。</summary>
     public string BridgeTitle { get; init; } = "";
+
+    /// <summary>桥报告的原始未读数；Unread 是应用本地已读水位后的显示值。</summary>
+    public int? BridgeUnread { get; init; }
 }
 
 /// <summary>一条消息（契约 3.2）。</summary>

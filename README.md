@@ -28,7 +28,10 @@ Fama 是它们的**唯一消费方**：它不直连平台、不解析平台原�
 
 REQ-FAMA-001：通讯式信息界面。会话列表支持标题搜索、摘要、来源、未读数和首字头像；
 消息按收发方向分左右气泡，保留多行正文并可选中复制，底部是多行输入和显式发送按钮。
-需要 HistoryAurora 1.34.0 或更新版的 `conversationList` / `chatTimeline` 组件。
+需要 HistoryAurora 1.35.0 或更新版的 `conversationList` / `chatTimeline` 组件。
+
+REQ-FAMA-002：未读会话优先排列；打开并读到最新消息后清除 Fama 本地红点，已读进度跨重启保存。
+本地已读不影响飞书等平台客户端的红点。
 验收由离线页面接线检查与 Aurora 聊天组件合同测试共同覆盖。
 
 | 从哪进 | 指令 | 用途 |
@@ -37,7 +40,7 @@ REQ-FAMA-001：通讯式信息界面。会话列表支持标题搜索、摘要�
 | 控制台 | `fama.bridge.add id= baseurl= [platform=] [title=] [token=]` | 新增或更新一个桥的接入配置 |
 | 控制台 | `fama.bridge.remove id=` | 移除一个桥的配置（不动桥容器与桥里的数据） |
 | 页面桥表 / 控制台 | `fama.bridge.test id=` | 探活一个桥，回平台、账号与能力 |
-| 页面会话表 / 控制台 | `fama.conv.list [bridge=] [q=] [kind=] [limit=]` | 跨桥列出会话，按最后消息倒序 |
+| 页面会话表 / 控制台 | `fama.conv.list [bridge=] [q=] [kind=] [limit=]` | 跨桥列出会话，本地未读优先、组内按最后消息倒序 |
 | 页面消息表 / 控制台 | `fama.msg.list bridge= conversation= [limit=]` | 列出某会话的消息，按时间升序 |
 | 页面发送按钮 / 控制台 | `fama.msg.send bridge= conversation= text=` | 发一条文字消息（**要确认**） |
 | 页面内部 | `fama.ui.describe / actions / data` | Aurora 页面协议，只读且对远程隐藏 |

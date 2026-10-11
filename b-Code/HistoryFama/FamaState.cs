@@ -30,9 +30,14 @@ internal sealed class FamaState
     private readonly FamaBridgeClient _client = new();
     private readonly object _gate = new();
     private List<FamaBridgeConfig>? _cache;
+    private readonly FamaReadState _readState;
 
     /// <summary>宿主给的上下文；离线测试传 null，此时没有配置文件可读。</summary>
-    public FamaState(IModuleContext? context) => _context = context;
+    public FamaState(IModuleContext? context)
+    {
+        _context = context;
+        _readState = new(context == null ? null : Path.Combine(context.Environment.DataDirectory, "read-state.json"));
+    }
 
     /// <summary>桥配置文件的绝对路径；没有上下文时是空串。</summary>
     public string ConfigPath => _context is null
@@ -160,10 +165,26 @@ internal sealed class FamaState
             }
         }
 
-        items.Sort((left, right) => right.LastTsMs.CompareTo(left.LastTsMs));
+        items = OrderConversations(items).ToList();
         if (items.Count > limit)
             items = items.GetRange(0, limit);
         return new FamaGather<FamaConversation>(items, problems);
+    }
+
+    /// <summary>REQ-FAMA-002：本地未读优先，每组再按最新消息倒序，时间相同时按身份保持稳定。</summary>
+    internal IReadOnlyList<FamaConversation> OrderConversations(IEnumerable<FamaConversation> items)
+        => items.Select(item => item with { BridgeUnread = item.Unread, Unread = _readState.Unread(item) })
+            .OrderByDescending(item => item.Unread > 0).ThenByDescending(item => item.LastTsMs)
+            .ThenBy(item => item.Bridge, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.ConversationId, StringComparer.Ordinal).ToList();
+
+    /// <summary>只确认已经成功显示的消息；迟到的旧水位不能吞掉更晚的新消息。</summary>
+    public async Task MarkReadAsync(string bridgeId, string conversation, long through, long last, int unread)
+    {
+        var bridge = Require(bridgeId);
+        if (last <= 0 || through < last || unread <= 0) return;
+        if (_readState.Mark(bridge.Id, conversation, last, unread))
+            await RefreshAsync(FamaPage.ConversationTableId).ConfigureAwait(false);
     }
 
     /// <summary>取某个桥里某个会话的消息。</summary>
@@ -241,7 +262,7 @@ internal sealed class FamaState
         return rows;
     }
 
-    /// <summary>会话表：跨桥汇总，按最后消息倒序。</summary>
+    /// <summary>会话行：沿用聚合结果的本地未读优先、组内最后消息倒序。</summary>
     public static IReadOnlyList<IReadOnlyDictionary<string, string>> ConversationRows(
         IEnumerable<FamaConversation> conversations)
         => conversations.Select(item => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>
@@ -265,6 +286,8 @@ internal sealed class FamaState
             ["time"] = Timestamp(item.LastTsMs),
             ["when"] = ShortTime(item.LastTsMs, DateTimeOffset.Now),
             ["unread"] = item.Unread > 0 ? item.Unread.ToString(CultureInfo.InvariantCulture) : "",
+            ["bridge_unread"] = (item.BridgeUnread ?? item.Unread).ToString(CultureInfo.InvariantCulture),
+            ["last_ts_ms"] = item.LastTsMs.ToString(CultureInfo.InvariantCulture),
         }).ToList();
 
     /// <summary>消息表：某会话按时间升序。</summary>
@@ -273,6 +296,7 @@ internal sealed class FamaState
         {
             ["id"] = item.Platform + "|" + item.MessageId,
             ["time"] = Timestamp(item.TsMs),
+            ["ts_ms"] = item.TsMs.ToString(CultureInfo.InvariantCulture),
             ["who"] = item.Direction == "out"
                 ? "我"
                 : string.IsNullOrWhiteSpace(item.SenderName) ? item.SenderId : item.SenderName,

@@ -195,7 +195,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".conv.list",
             Domain = domain,
             CommandClass = "conv",
-            Summary = "列出各平台桥上的会话，按最后一条消息的时间倒序；指定 bridge 就只看那一个桥。",
+            Summary = "列出各平台会话，本地未读优先、组内按最后消息倒序；指定 bridge 就只看那个桥。",
             Example = domain + ".conv.list limit=20",
             Level = CommandLevel.Run,
             Readonly = true,
@@ -244,6 +244,35 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
 
                 var rows = FamaState.ConversationRows(gather.Items);
                 return CommandResult.Ok(WithProblems($"共 {rows.Count} 个会话", gather.Problems), rows);
+            }),
+        });
+
+        registry.Register(new CommandDescriptor
+        {
+            Name = domain + ".conv.read",
+            Domain = domain,
+            CommandClass = "conv",
+            Summary = "记录 Fama 本地已读水位并更新红点，不修改平台端已读状态。",
+            Example = domain + ".conv.read bridge=feishu conversation=123 through=1791537512673 last=1791537512673 unread=1",
+            Level = CommandLevel.Run,
+            HiddenReason = "由消息时间线成功显示最新内容后调用的本地已读动作",
+            Parameters =
+            [
+                new() { Name = "bridge", Description = "桥配置 id", Required = true },
+                new() { Name = "conversation", Description = "会话主键", Required = true },
+                new() { Name = "through", Description = "实际显示的最新消息时间戳（毫秒）", Required = true },
+                new() { Name = "last", Description = "所选会话快照的最后消息时间戳（毫秒）", Required = true },
+                new() { Name = "unread", Description = "所选会话快照里桥报告的原始未读数", Type = ParamType.Int, Required = true },
+            ],
+            Handler = context => GuardAsync(async () =>
+            {
+                if (!long.TryParse(context.RequireString("through"), out var through)
+                    || !long.TryParse(context.RequireString("last"), out var last)
+                    || through <= 0 || last <= 0 || context.GetInt("unread", -1) < 0)
+                    return CommandResult.Fail("已读水位需要有效的毫秒时间戳与非负未读数。");
+                await state.MarkReadAsync(context.RequireString("bridge"), context.RequireString("conversation"),
+                    through, last, context.GetInt("unread", 0)).ConfigureAwait(false);
+                return CommandResult.Ok("本地已读状态已更新");
             }),
         });
 

@@ -24,6 +24,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("versions agree", Sync(TestVersionsAgree)),
     ("bridge config round-trips", Sync(TestBridgeConfig)),
     ("page rows follow the contract", Sync(TestPageRows)),
+    ("REQ-FAMA-002 local read and unread ordering", TestLocalRead),
     ("bridge client speaks the contract", TestBridgeClient),
     ("host loads the package", TestHostLoadsPackage),
 };
@@ -70,6 +71,7 @@ static void TestCommandRegistration()
         domain + ".bridge.remove",
         domain + ".bridge.test",
         domain + ".conv.list",
+        domain + ".conv.read",
         domain + ".msg.list",
         domain + ".msg.send",
         domain + ".recv.auto",
@@ -94,7 +96,7 @@ static void TestCommandRegistration()
     }
 
     // 写配置、拨开关、重连的几条不能标只读，发送要人点头
-    foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove", domain + ".recv.auto", domain + ".recv.refresh" })
+    foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove", domain + ".recv.auto", domain + ".recv.refresh", domain + ".conv.read" })
     {
         registry.TryGet(name, out var write);
         True(!write!.Readonly, $"{name} 会改配置，不能标只读");
@@ -216,6 +218,7 @@ static void TestMessengerInterface()
     Equal("fama.search", query.GetProperty("channel").GetString()!);
     var timeline = Find(nodes, FamaPage.MessageTableId);
     Equal("chatTimeline", timeline.GetProperty("type").GetString()!);
+    Equal(FamaPage.ReadActionId, timeline.GetProperty("readAction").GetString()!);
     Equal("{selection.fama.conversation.title}", timeline.GetProperty("source").GetString()!);
     var input = Find(nodes, FamaPage.TextBoxId);
     True(input.GetProperty("multiline").GetBoolean(), "聊天输入区必须支持换行");
@@ -342,6 +345,39 @@ static void TestPageRows()
     Equal("我", messageRows[2]["who"]);          // 自己发的
     True(messageRows[1]["text"].Contains("1 个附件", StringComparison.Ordinal), "有附件要标出来");
     Equal("qq|out-1", messageRows[2]["id"]);
+}
+
+static async Task TestLocalRead()
+{
+    var directory = NewScratch("local-read");
+    try
+    {
+        var state = new FamaState(new FakeContext(directory));
+        state.AddBridge("feishu", "feishu", "飞书", "http://127.0.0.1:9", null);
+        var unread = new FamaConversation("feishu", "attendance", "Attendance", "private", 0, 1000, "提醒", 3) { Bridge = "feishu" };
+        var recent = unread with { ConversationId = "recent", LastTsMs = 2000, Unread = 0 };
+        Equal("attendance", state.OrderConversations([recent, unread])[0].ConversationId);
+        await state.MarkReadAsync("feishu", "attendance", 500, 1000, 3);
+        Equal(3, state.OrderConversations([unread])[0].Unread);
+        await state.MarkReadAsync("feishu", "attendance", 1000, 1000, 3);
+        var reopened = new FamaState(new FakeContext(directory));
+        Equal(0, reopened.OrderConversations([unread])[0].Unread);
+        Equal("recent", reopened.OrderConversations([unread, recent])[0].ConversationId);
+        var next = unread with { LastTsMs = 3000, Unread = 4 };
+        Equal(1, reopened.OrderConversations([next])[0].Unread);
+        await reopened.MarkReadAsync("feishu", "attendance", 1000, 1000, 3);
+        Equal(1, reopened.OrderConversations([next])[0].Unread);
+        Equal(3, reopened.OrderConversations([unread with { Bridge = "another-account" }])[0].Unread);
+        await reopened.MarkReadAsync("feishu", "attendance", 3000, 3000, 4);
+        await reopened.MarkReadAsync("feishu", "attendance", 3000, 3000, 3);
+        Equal(0, reopened.OrderConversations([next])[0].Unread);
+        Equal(1, reopened.OrderConversations([next with { LastTsMs = 4000, Unread = 1 }])[0].Unread);
+        var rows = FamaState.ConversationRows(reopened.OrderConversations([next]));
+        Equal("", rows[0]["unread"]);
+        Equal("4", rows[0]["bridge_unread"]);
+        Equal("3000", rows[0]["last_ts_ms"]);
+    }
+    finally { Cleanup(directory); }
 }
 
 static async Task TestBridgeClient()

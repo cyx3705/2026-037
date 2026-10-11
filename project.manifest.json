@@ -14,7 +14,7 @@
       "appshell-module"
     ],
     "status": "active",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "branch": "main"
   },
   "paths": {
@@ -59,7 +59,7 @@
   "externalDependencies": [
     "HistoryVulcan 5.1.2 \u6216\u66F4\u65B0\u7684\u53D1\u5E03\u5FEB\u7167\uFF1AC:\\OneHistory\\HistoryClio\\2026-023-HistoryVulcan\\z-Publish",
     ".NET 8 SDK \u4E0E Windows Desktop Runtime\uFF08\u76EE\u6807\u6846\u67B6 net8.0-windows\uFF09",
-    "HistoryAurora >= 1.34.0（界面可选依赖）：提供 conversationList / chatTimeline 与多行输入；没有它时控制台指令仍可执行"
+    "HistoryAurora >= 1.35.0（界面可选依赖）：提供 conversationList / chatTimeline 与多行输入；没有它时控制台指令仍可执行"
   ],
   "contextExclusions": [
     "z-Publish/**",
