@@ -193,6 +193,9 @@ internal sealed class FamaState
         => await _client.MessagesAsync(Require(bridgeId), conversationId, limit, cancellation)
             .ConfigureAwait(false);
 
+    public Task<byte[]> ImageAsync(string bridgeId, string path, CancellationToken cancellation)
+        => _client.ImageAsync(Require(bridgeId), path, cancellation);
+
     /// <summary>把一个桥的配置与在线状态列出来，供 bridge.list 与页面桥表使用。</summary>
     public async Task<IReadOnlyList<FamaBridgeStatus>> StatusesAsync(CancellationToken cancellation)
     {
@@ -213,15 +216,16 @@ internal sealed class FamaState
         return result;
     }
 
-    /// <summary>发一条文字消息，成功后刷新消息表。</summary>
+    /// <summary>发文字或图片，成功后刷新消息表。</summary>
     public async Task<FamaMessage> SendAsync(
-        string bridgeId, string conversationId, string text, CancellationToken cancellation)
+        string bridgeId, string conversationId, string text, string? filePath, CancellationToken cancellation)
     {
         var bridge = Require(bridgeId);
+        IReadOnlyList<FamaUpload>? attachments = string.IsNullOrWhiteSpace(filePath) ? null : [ReadAttachment(filePath)];
         FamaMessage sent;
         try
         {
-            sent = await _client.SendAsync(bridge, conversationId, text, cancellation).ConfigureAwait(false);
+            sent = await _client.SendAsync(bridge, conversationId, text, attachments, cancellation).ConfigureAwait(false);
         }
         catch (FamaBridgeException ex) when (ex.Code == "unsupported")
         {
@@ -232,6 +236,22 @@ internal sealed class FamaState
         return sent;
     }
 
+    private static FamaUpload ReadAttachment(string filePath)
+    {
+        var info = new FileInfo(Path.GetFullPath(filePath.Trim()));
+        if (!info.Exists) throw new FamaBridgeException($"找不到附件文件：{filePath}", "bad_request");
+        if (info.Length > 8L * 1024 * 1024) throw new FamaBridgeException("附件不能超过 8 MiB。", "bad_request");
+        var contentType = info.Extension.ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            _ => throw new FamaBridgeException("目前只支持 PNG、JPEG、GIF 和 WebP 图片。", "bad_request"),
+        };
+        return new FamaUpload(info.Name, contentType, Convert.ToBase64String(File.ReadAllBytes(info.FullName)));
+    }
+
     private IReadOnlyList<FamaBridgeConfig> Targets(string? bridgeId)
     {
         if (string.IsNullOrWhiteSpace(bridgeId))
@@ -240,6 +260,19 @@ internal sealed class FamaState
     }
 
     // ---------------------------------------------------------------- 页面行
+
+    private static string SourceLabel(FamaBridgeConfig bridge) => bridge.Display + " · " + bridge.Id;
+
+    public IReadOnlyList<IReadOnlyDictionary<string, string>> SourceRows()
+        => new[] { FamaPage.AllSources }.Concat(Bridges().Select(SourceLabel))
+            .Select(value => (IReadOnlyDictionary<string, string>)new Dictionary<string, string> { ["value"] = value }).ToList();
+
+    public string? SourceBridge(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source) || source == FamaPage.AllSources) return null;
+        return Bridges().FirstOrDefault(bridge => SourceLabel(bridge).Equals(source, StringComparison.OrdinalIgnoreCase))?.Id
+            ?? throw new FamaBridgeException("来源已失效，请重新打开通讯录选择来源。");
+    }
 
     /// <summary>桥表：状态、账号与收发能力，离线时把原因写在能力列。</summary>
     public async Task<IReadOnlyList<IReadOnlyDictionary<string, string>>> BridgeRowsAsync(CancellationToken cancellation)
@@ -300,12 +333,29 @@ internal sealed class FamaState
             ["who"] = item.Direction == "out"
                 ? "我"
                 : string.IsNullOrWhiteSpace(item.SenderName) ? item.SenderId : item.SenderName,
-            ["text"] = item.Text + (item.Attachments > 0
+            ["text"] = item.Files.Any(file => file.IsImage && !string.IsNullOrWhiteSpace(file.Url))
+                ? ImageCaption(item)
+                : item.Text + (item.Attachments > 0 && item.Files.Count == 0
                 ? $"（{item.Attachments.ToString(CultureInfo.InvariantCulture)} 个附件）"
                 : ""),
             ["kind"] = item.Kind,
             ["direction"] = item.Direction,
+            ["images"] = JsonSerializer.Serialize(item.Files.Where(file => file.IsImage).Select(file => new { name = file.Name, path = file.Url ?? "" })),
+            ["attachment_summary"] = string.Join("\n", item.Files.Where(file => !file.IsImage).Select(file => file.Name + (file.Size > 0 ? $" · {file.Size:N0} 字节" : ""))),
+            ["media_hint"] = item.Kind == "image" && !item.Files.Any(file => file.IsImage) ? "图片原件暂不可用" : "",
         }).ToList();
+
+    private static string ImageCaption(FamaMessage item)
+    {
+        var text = item.Text.Trim();
+        if (text.Length == 0 || text.Equals("[图片]", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("图片", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("[image]", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("image", StringComparison.OrdinalIgnoreCase)
+            || item.Files.Any(file => file.IsImage && text.Equals(file.Name, StringComparison.OrdinalIgnoreCase)))
+            return "";
+        return item.Text;
+    }
 
     private static string Ability(FamaBridgeMeta meta)
     {

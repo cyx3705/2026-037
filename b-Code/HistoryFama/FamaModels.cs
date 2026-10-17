@@ -65,6 +65,12 @@ internal sealed record FamaBridgeMeta(
     long MinTsMs,
     long MaxTsMs);
 
+/// <summary>发给桥的图片附件。</summary>
+internal sealed record FamaUpload(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("content_type")] string ContentType,
+    [property: JsonPropertyName("data_base64")] string DataBase64);
+
 /// <summary>一个会话（契约 3.1）。</summary>
 internal sealed record FamaConversation(
     string Platform,
@@ -100,7 +106,16 @@ internal sealed record FamaMessage(
     string SenderName,
     string Kind,
     string Text,
-    int Attachments);
+    int Attachments)
+{
+    public IReadOnlyList<FamaAttachment> Files { get; init; } = [];
+}
+
+/// <summary>桥提供的附件元数据；Url 为相对附件路径，不携带鉴权信息。</summary>
+internal sealed record FamaAttachment(string Name, string ContentType, long Size, string? Url)
+{
+    public bool IsImage => ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+}
 
 /// <summary>一次跨桥取数的结果：拿到的行，以及没答上来的桥各自的原因。</summary>
 internal sealed record FamaGather<T>(IReadOnlyList<T> Items, IReadOnlyList<string> Problems)

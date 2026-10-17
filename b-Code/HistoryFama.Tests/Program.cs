@@ -21,7 +21,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("page owner follows domain", Sync(TestPageOwner)),
     ("buttons, actions and commands line up", Sync(TestPageWiring)),
     ("REQ-FAMA-001 messenger interface", Sync(TestMessengerInterface)),
+    ("REQ-FAMA-004 send and source controls", TestSendAndSourceControls),
     ("versions agree", Sync(TestVersionsAgree)),
+    ("tunnel defaults and probe isolation", Sync(TestTunnelDefaults)),
     ("bridge config round-trips", Sync(TestBridgeConfig)),
     ("page rows follow the contract", Sync(TestPageRows)),
     ("REQ-FAMA-002 local read and unread ordering", TestLocalRead),
@@ -79,6 +81,7 @@ static void TestCommandRegistration()
         domain + ".ui.describe",
         domain + ".ui.actions",
         domain + ".ui.data",
+        domain + ".ui.image",
     ];
     foreach (var name in expected)
     {
@@ -88,14 +91,14 @@ static void TestCommandRegistration()
 
     Equal(expected.Length, registry.All.Count(d => d.Name.StartsWith(domain + ".", StringComparison.Ordinal)));
 
-    foreach (var method in new[] { "describe", "actions", "data" })
+    foreach (var method in new[] { "describe", "actions", "data", "image" })
     {
         True(registry.TryGet(domain + ".ui." + method, out var ui), $"缺少 {domain}.ui.{method}");
         True(ui!.Readonly, $"{domain}.ui.{method} 必须只读");
         True(ui.HiddenReason is not null, $"{domain}.ui.{method} 是界面内部协议，必须 HiddenReason");
     }
 
-    // 写配置、拨开关、重连的几条不能标只读，发送要人点头
+    // 写配置、拨开关、重连和发送不能标只读；显式发送按钮不再弹二次确认。
     foreach (var name in new[] { domain + ".bridge.add", domain + ".bridge.remove", domain + ".recv.auto", domain + ".recv.refresh", domain + ".conv.read" })
     {
         registry.TryGet(name, out var write);
@@ -103,8 +106,11 @@ static void TestCommandRegistration()
     }
 
     registry.TryGet(domain + ".msg.send", out var send);
-    Equal(CommandLevel.Ask, send!.Level);
-    True(send.ConfirmPrompt is not null, "发消息必须给确认文案");
+    Equal(CommandLevel.Run, send!.Level);
+    True(send.ConfirmPrompt is null, "发送不能再弹二次确认");
+    True(!send.Readonly, "发送仍是写操作，不能投影为只读 MCP");
+    True(send.Parameters.Any(p => p.Name == "file" && !p.Required), "发送必须接受可选的图片参数");
+    True(send.Parameters.Any(p => p.Name == "text" && !p.Required), "纯图片发送不能要求正文");
 
     // 只读的查询指令才允许投影到 MCP，这里逐条钉住
     foreach (var name in new[] { domain + ".bridge.list", domain + ".bridge.test", domain + ".conv.list", domain + ".msg.list" })
@@ -198,6 +204,7 @@ static void TestPageWiring()
     Equal("{selection." + FamaPage.ConversationChannel + ".bridge}", sendArgs.GetProperty("bridge").GetString()!);
     Equal("{selection." + FamaPage.ConversationChannel + ".conversation}", sendArgs.GetProperty("conversation").GetString()!);
     Equal("{" + FamaPage.TextBoxId + "}", sendArgs.GetProperty("text").GetString()!);
+    Equal("{" + FamaPage.FileBoxId + "}", sendArgs.GetProperty("file").GetString()!);
 }
 
 // REQ-FAMA-001：通讯式外观仍沿用桥 id 接线；搜索必须接到真实参数，输入换行不能折叠成会话摘要。
@@ -218,6 +225,9 @@ static void TestMessengerInterface()
     Equal("fama.search", query.GetProperty("channel").GetString()!);
     var timeline = Find(nodes, FamaPage.MessageTableId);
     Equal("chatTimeline", timeline.GetProperty("type").GetString()!);
+    Equal("fama.ui.image", timeline.GetProperty("imageSource").GetProperty("command").GetString()!);
+    Equal("{selection.fama.conversation.bridge}", timeline.GetProperty("imageSource").GetProperty("args").GetProperty("bridge").GetString()!);
+    Equal("{image.path}", timeline.GetProperty("imageSource").GetProperty("args").GetProperty("path").GetString()!);
     Equal(FamaPage.ReadActionId, timeline.GetProperty("readAction").GetString()!);
     Equal("{selection.fama.conversation.title}", timeline.GetProperty("source").GetString()!);
     var input = Find(nodes, FamaPage.TextBoxId);
@@ -228,6 +238,61 @@ static void TestMessengerInterface()
     True(data!.Parameters.Any(parameter => parameter.Name == "q"), "搜索词必须被取数指令接收");
 }
 
+// REQ-FAMA-004：来源来自配置（不依赖探活），筛选仍使用唯一的桥 id；只清理成功提交的草稿。
+static async Task TestSendAndSourceControls()
+{
+    using var description = JsonDocument.Parse(FamaPage.Describe());
+    var nodes = Descendants(description.RootElement).ToList();
+    var source = Find(nodes, FamaPage.SourceBoxId);
+    Equal("select", source.GetProperty("mode").GetString()!);
+    Equal(FamaPage.SourceChannel, source.GetProperty("channel").GetString()!);
+    Equal(FamaPage.ViewSource, source.GetProperty("optionsSource").GetProperty("args").GetProperty("view").GetString()!);
+    var firstRow = Find(nodes, FamaPage.ReceivePanelId).GetProperty("rows")[0].GetProperty("widgets");
+    Equal(FamaPage.SourceBoxId, firstRow[0].GetProperty("id").GetString()!);
+    Equal("{selection.fama.source.value}", Find(nodes, FamaPage.ConversationTableId).GetProperty("dataSource").GetProperty("args").GetProperty("source").GetString()!);
+    var attachment = Find(nodes, FamaPage.FileBoxId);
+    Equal("sourcePicker", attachment.GetProperty("kind").GetString()!);
+    True(!attachment.TryGetProperty("commitAction", out _), "选择图片不能触发发送");
+    using var actions = JsonDocument.Parse(FamaPage.Actions());
+    var send = actions.RootElement.GetProperty("actions").EnumerateArray().Single(a => a.GetProperty("id").GetString() == FamaPage.SendActionId);
+    Equal("text,attachment", string.Join(",", send.GetProperty("clearOnSuccess").EnumerateArray().Select(e => e.GetString())));
+    var directory = NewScratch("source-options");
+    try
+    {
+        var state = new FamaState(new FakeContext(directory));
+        using var work = new StubBridge();
+        using var home = new StubBridge();
+        Equal(1, state.SourceRows().Count);
+        state.AddBridge("qq-work", "qq", "QQ", "http://127.0.0.1:" + work.Port, null);
+        state.AddBridge("qq-home", "qq", "QQ", "http://127.0.0.1:" + home.Port, null);
+        var options = state.SourceRows();
+        Equal(3, options.Count);
+        True(state.SourceBridge(options[0]["value"]) is null, "全部来源必须聚合");
+        Equal("qq-work", state.SourceBridge(options[1]["value"])!);
+        Equal("qq-home", state.SourceBridge(options[2]["value"])!);
+        var registry = new Registrar();
+        HistoryFamaModule.Register(registry, state, new FamaLive(null, state));
+        registry.TryGet("fama.ui.data", out var data);
+        True(data!.Parameters.Any(p => p.Name == "source"), "取数必须接收来源筛选");
+        var parameters = new Dictionary<string, string>
+        {
+            ["view"] = FamaPage.ViewConversation, ["source"] = options[2]["value"], ["q"] = "通知",
+        };
+        var result = await data.Handler(new CommandContext(data, parameters, "test", null, CancellationToken.None));
+        True(result.Success, result.Message);
+        var rows = (IReadOnlyList<IReadOnlyDictionary<string, string>>)result.Data!;
+        Equal(2, rows.Count);
+        True(rows.All(row => row["bridge"] == "qq-home"), "来源筛选必须限定桥 id");
+        Equal(0, work.Requests.Count);
+        True(home.Requests.Single().Contains("q=%E9%80%9A%E7%9F%A5", StringComparison.Ordinal), "来源筛选不能丢搜索词");
+        parameters["source"] = FamaPage.AllSources;
+        result = await data.Handler(new CommandContext(data, parameters, "test", null, CancellationToken.None));
+        True(result.Success, result.Message);
+        Equal(4, ((IReadOnlyList<IReadOnlyDictionary<string, string>>)result.Data!).Count);
+    }
+    finally { Cleanup(directory); }
+}
+
 static void TestVersionsAgree()
 {
     var manifest = ReadManifest(Path.Combine(AppContext.BaseDirectory, "module.manifest.json"));
@@ -236,6 +301,24 @@ static void TestVersionsAgree()
     Equal(new ModuleInfo().Version, manifest.GetProperty("version").GetString()!);
     Equal(FamaIdentity.Name, new ModuleInfo().ModuleName);
     Equal(FamaIdentity.Description, manifest.GetProperty("description").GetString()!);
+}
+
+static void TestTunnelDefaults()
+{
+    var settings = new FamaTunnelSettings();
+    True(settings.Enabled, "正式服务默认应托管云端隧道");
+    Equal("root@101.132.190.76", settings.Server);
+    Equal("%USERPROFILE%\\.ssh\\messagehub-cloud.pem", settings.KeyPath);
+    Equal("8010,8011,8012,6080,6081,6099", string.Join(",", settings.Ports));
+
+    var directory = NewScratch("tunnel-probe");
+    try
+    {
+        True(FamaTunnel.Start(directory, HostRunMode.Probe, []) is null, "probe 不得启动隧道");
+        True(FamaTunnel.Start(directory, HostRunMode.Service, []) is null, "没有本机桥配置时不得启动隧道");
+        True(!File.Exists(Path.Combine(directory, "tunnel.json")), "probe 不得写入隧道配置");
+    }
+    finally { Cleanup(directory); }
 }
 
 static void TestBridgeConfig()
@@ -333,7 +416,8 @@ static void TestPageRows()
     var messages = new[]
     {
         new FamaMessage("qq", "m1", "qq:group:1", 1791537512673, "in", "7", "李四", "text", "大家好\n第二行", 0),
-        new FamaMessage("qq", "m2", "qq:group:1", 1791537513000, "in", "8", "", "image", "[图片]", 1),
+        new FamaMessage("qq", "m2", "qq:group:1", 1791537513000, "in", "8", "", "image", "[图片]", 1)
+            { Files = [new("photo.png", "image/png", 100, "/api/v1/attachments/image.png")] },
         new FamaMessage("qq", "out-1", "qq:group:1", 1791537514000, "out", "", "", "text", "收到", 0),
     };
     var messageRows = FamaState.MessageRows(messages);
@@ -343,8 +427,14 @@ static void TestPageRows()
     Equal("qq · 群聊 · 124 人", rows[0]["subtitle"]);
     Equal("8", messageRows[1]["who"]);           // 名字空时用 id 兜底，不显示空白
     Equal("我", messageRows[2]["who"]);          // 自己发的
-    True(messageRows[1]["text"].Contains("1 个附件", StringComparison.Ordinal), "有附件要标出来");
+    Equal("", messageRows[1]["text"]);
+    using (var images = JsonDocument.Parse(messageRows[1]["images"]))
+        Equal("/api/v1/attachments/image.png", images.RootElement[0].GetProperty("path").GetString()!);
     Equal("qq|out-1", messageRows[2]["id"]);
+    var image = messages[1] with { Text = "photo.png" };
+    Equal("", FamaState.MessageRows([image])[0]["text"]);
+    Equal("实际图片说明", FamaState.MessageRows([image with { Text = "实际图片说明" }])[0]["text"]);
+    True(FamaState.MessageRows([image with { Files = [] }])[0]["text"].Length > 0, "没有预览地址时必须保留回退文字");
 }
 
 static async Task TestLocalRead()
@@ -415,11 +505,43 @@ static async Task TestBridgeClient()
     Equal("", messages[1].SenderName);
     Equal(1, messages[1].Attachments);
     Equal("image", messages[1].Kind);
+    Equal("/api/v1/attachments/x.png", messages[1].Files.Single().Url!);
+    var rows = FamaState.MessageRows(messages);
+    using (var images = JsonDocument.Parse(rows[1]["images"]))
+        Equal("a.png", images.RootElement[0].GetProperty("name").GetString()!);
+
+    // REQ-FAMA-003：下载只走配置桥，不能把凭据带到附件给出的任意 URL。
+    var imageBytes = await client.ImageAsync(bridge, "/api/v1/attachments/x.png", CancellationToken.None);
+    Equal(4, imageBytes.Length);
+    True(stub.Requests.Last().Contains("Authorization: Bearer test-token", StringComparison.Ordinal), "图片请求也必须带鉴权头");
+    var requestCount = stub.Requests.Count;
+    foreach (var invalid in new[] { "https://example.invalid/a.png", "//elsewhere/a.png", "/api/v1/attachments/../meta", "/api/v1/attachments/%2e%2e", "/api/v1/attachments/x.png?token=secret", "/api/v1/attachments/%2fabc", "/api/v1/attachments/%252fabc" })
+    {
+        var rejected = false;
+        try { await client.ImageAsync(bridge, invalid, CancellationToken.None); }
+        catch (FamaBridgeException) { rejected = true; }
+        True(rejected, "必须拒绝非法图片路径：" + invalid);
+    }
+    Equal(requestCount, stub.Requests.Count);
+    foreach (var file in new[] { "redirect.png", "large.png", "wrong.png", "empty.png" })
+    {
+        var rejected = false;
+        try { await client.ImageAsync(bridge, "/api/v1/attachments/" + file, CancellationToken.None); }
+        catch (FamaBridgeException) { rejected = true; }
+        True(rejected, "必须拒绝非法图片响应：" + file);
+    }
+    Equal(requestCount + 4, stub.Requests.Count);
 
     var sent = await client.SendAsync(bridge, "qq:group:1", "收到", CancellationToken.None);
     Equal("out-1", sent.MessageId);
     Equal("out", sent.Direction);
     Equal("收到", sent.Text);
+
+    var uploaded = await client.SendAsync(bridge, "qq:group:1", "", [new FamaUpload("a.png", "image/png", "AQI=")], CancellationToken.None);
+    Equal("out-1", uploaded.MessageId);
+    True(stub.Requests.Any(r => r.Contains("\"name\":\"a.png\"", StringComparison.Ordinal)
+        && r.Contains("\"content_type\":\"image/png\"", StringComparison.Ordinal)
+        && r.Contains("\"data_base64\":\"AQI=\"", StringComparison.Ordinal)), "附件必须保留桥发送契约");
 
     // 契约里的错误码要原样透出来，指令层才能按 unsupported 说人话
     var unsupported = false;
@@ -786,6 +908,20 @@ sealed class StubBridge : IDisposable
                               + $" | {body}");
             }
 
+            if (path.StartsWith("/api/v1/attachments/", StringComparison.Ordinal))
+            {
+                var redirect = path.EndsWith("redirect.png", StringComparison.Ordinal);
+                var large = path.EndsWith("large.png", StringComparison.Ordinal);
+                var empty = path.EndsWith("empty.png", StringComparison.Ordinal);
+                var mime = path.EndsWith("wrong.png", StringComparison.Ordinal) ? "text/html" : "image/png";
+                var length = large ? FamaBridgeClient.MaxImageBytes + 1 : empty ? 0 : 4;
+                var status = redirect ? "302 Found\r\nLocation: /api/v1/meta" : "200 OK";
+                var header = $"HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n";
+                await stream.WriteAsync(Encoding.ASCII.GetBytes(header));
+                if (!large && !empty) await stream.WriteAsync(new byte[] { 137, 80, 78, 71 });
+                await stream.FlushAsync();
+                return;
+            }
             var payload = Respond(method, path);
             var bytes = Encoding.UTF8.GetBytes(payload);
             var responseHead = "HTTP/1.1 200 OK\r\n"

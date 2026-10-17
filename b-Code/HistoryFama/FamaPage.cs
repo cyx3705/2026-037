@@ -38,10 +38,17 @@ internal static class FamaPage
     /// <summary>发送内容输入框的控件 id，动作参数里用 <c>{text}</c> 取它的当前值。</summary>
     public const string TextBoxId = "text";
 
+    public const string FileBoxId = "attachment";
+
+    public const string SourceBoxId = "source";
+    public const string SourceChannel = "fama.source";
+    public const string AllSources = "全部来源";
+    public const string ViewSource = "source";
+
     /// <summary>自动接收开关的控件 id。</summary>
     public const string AutoSwitchId = "auto";
 
-    /// <summary>fama.ui.data 的三张视图；bridge 页面上已不用，留给控制台排障。</summary>
+    /// <summary>桥视图；bridge 页面上已不用，留给控制台排障。</summary>
     public const string ViewBridge = "bridge";
 
     /// <summary>见 <see cref="ViewBridge"/>。</summary>
@@ -105,6 +112,12 @@ internal static class FamaPage
                                     {
                                         new
                                         {
+                                            kind = "textbox", id = SourceBoxId, label = "来源", mode = "select",
+                                            channel = SourceChannel, value = AllSources, minWidth = 72, flex = true,
+                                            optionsSource = new { command = DataCommand, args = new { view = ViewSource } },
+                                        },
+                                        new
+                                        {
                                             kind = "switch",
                                             id = AutoSwitchId,
                                             label = "自动接收",
@@ -128,7 +141,7 @@ internal static class FamaPage
                             type = "conversationList",
                             id = ConversationTableId,
                             channel = ConversationChannel,
-                            dataSource = new { command = DataCommand, args = new { view = ViewConversation, q = "{selection.fama.search.value}" } },
+                            dataSource = new { command = DataCommand, args = new { view = ViewConversation, q = "{selection.fama.search.value}", source = "{selection.fama.source.value}" } },
                         },
                     },
                 },
@@ -148,6 +161,11 @@ internal static class FamaPage
                         new
                         {
                             type = "chatTimeline",
+                            imageSource = new { command = FamaIdentity.Domain + ".ui.image", args = new Dictionary<string, string>
+                            {
+                                ["bridge"] = Selected("bridge"),
+                                ["path"] = "{image.path}",
+                            } },
                             readAction = ReadActionId,
                             id = MessageTableId,
                             source = Selected("title"),
@@ -175,13 +193,14 @@ internal static class FamaPage
                                     widgets = new object[]
                                     {
                                         new { kind = "textbox", id = TextBoxId, label = "", multiline = true, flex = true },
+                                        new { kind = "sourcePicker", id = FileBoxId, label = "图片", selectCommand = "aurora.ui.selectfile" },
                                     },
                                 },
                                 new
                                 {
                                     widgets = new object[]
                                     {
-                                        new { kind = "text", text = "Enter 换行 · 发送前确认收件人", flex = true },
+                                        new { kind = "text", text = "Enter 换行 · 点击发送", flex = true },
                                         new
                                         {
                                             kind = "button",
@@ -231,8 +250,10 @@ internal static class FamaPage
                     ["bridge"] = Selected("bridge"),
                     ["conversation"] = Selected("conversation"),
                     ["text"] = "{" + TextBoxId + "}",
+                    ["file"] = "{" + FileBoxId + "}",
                 },
-                summary = "把输入框里的文字发到通讯录里选中的会话",
+                clearOnSuccess = new[] { TextBoxId, FileBoxId },
+                summary = "把文字或图片发到当前会话，成功后清空发送栏",
             },
             new
             {

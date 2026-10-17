@@ -26,6 +26,44 @@ internal sealed class FamaBridgeClient
     };
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private readonly HttpClient _images = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) };
+    internal const int MaxImageBytes = 8 * 1024 * 1024;
+
+    internal static bool IsAttachmentPath(string? path)
+    {
+        const string prefix = "/api/v1/attachments/";
+        if (path == null || !path.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        var name = Uri.UnescapeDataString(path[prefix.Length..]);
+        return name.Length > 0 && name is not "." and not ".."
+            && !name.Any(c => char.IsControl(c) || c is '/' or '\\' or '?' or '#' or '%');
+    }
+
+    /// <summary>REQ-FAMA-003：图片只从配置桥的附件端点读取，令牌只放请求头，拒绝跳转和超限响应。</summary>
+    public async Task<byte[]> ImageAsync(FamaBridgeConfig config, string path, CancellationToken cancellation)
+    {
+        if (!IsAttachmentPath(path)) throw new FamaBridgeException("图片附件路径无效。", "invalid_attachment");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        cancellation = timeout.Token;
+        using var request = new HttpRequestMessage(HttpMethod.Get, config.BaseUrl.TrimEnd('/') + path);
+        if (!string.IsNullOrWhiteSpace(config.Token)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.Token);
+        using var response = await _images.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellation).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw new FamaBridgeException($"图片下载失败（HTTP {(int)response.StatusCode}）。");
+        if (!(response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false))
+            throw new FamaBridgeException("附件不是可预览的图片。");
+        if (response.Content.Headers.ContentLength > MaxImageBytes) throw new FamaBridgeException("图片超过 8 MB，暂不预览。");
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false);
+        using var output = new MemoryStream();
+        var buffer = new byte[16384];
+        int read;
+        while ((read = await stream.ReadAsync(buffer, cancellation).ConfigureAwait(false)) > 0)
+        {
+            if (output.Length + read > MaxImageBytes) throw new FamaBridgeException("图片超过 8 MB，暂不预览。");
+            output.Write(buffer, 0, read);
+        }
+        if (output.Length == 0) throw new FamaBridgeException("图片内容为空。");
+        return output.ToArray();
+    }
 
     /// <summary>探活并取回桥的能力与计数。</summary>
     public async Task<FamaBridgeMeta> MetaAsync(FamaBridgeConfig config, CancellationToken cancellation)
@@ -88,16 +126,20 @@ internal sealed class FamaBridgeClient
         return ReadMessages(data);
     }
 
-    /// <summary>发一条文字消息，返回桥落库后的那条 out 消息。</summary>
+    /// <summary>发文字或图片，返回桥落库后的 out 消息。</summary>
     public async Task<FamaMessage> SendAsync(
-        FamaBridgeConfig config, string conversationId, string text, CancellationToken cancellation)
+        FamaBridgeConfig config, string conversationId, string text,
+        IReadOnlyList<FamaUpload>? attachments, CancellationToken cancellation)
     {
         var path = "/api/v1/conversations/" + Uri.EscapeDataString(conversationId) + "/messages";
-        var body = JsonSerializer.Serialize(new { text }, WriteOptions);
+        var body = JsonSerializer.Serialize(new { text, attachments }, WriteOptions);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         var data = await RequestAsync(config, HttpMethod.Post, path, content, cancellation).ConfigureAwait(false);
         return ReadMessage(data);
     }
+
+    public Task<FamaMessage> SendAsync(FamaBridgeConfig config, string conversationId, string text, CancellationToken cancellation)
+        => SendAsync(config, conversationId, text, null, cancellation);
 
     private static IReadOnlyList<FamaMessage> ReadMessages(JsonElement data)
     {
@@ -120,7 +162,13 @@ internal sealed class FamaBridgeClient
             Text(item, "sender_name"),
             Text(item, "kind"),
             Text(item, "text"),
-            attachments.ValueKind == JsonValueKind.Array ? attachments.GetArrayLength() : 0);
+            attachments.ValueKind == JsonValueKind.Array ? attachments.GetArrayLength() : 0)
+        {
+            Files = attachments.ValueKind == JsonValueKind.Array
+                ? attachments.EnumerateArray().Select(file => new FamaAttachment(Text(file, "name"), Text(file, "content_type"),
+                    Long(file, "size"), IsAttachmentPath(Text(file, "url")) ? Text(file, "url") : null)).ToList()
+                : [],
+        };
     }
 
     private async Task<JsonElement> RequestAsync(

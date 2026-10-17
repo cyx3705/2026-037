@@ -7,8 +7,9 @@ namespace HistoryFama;
 /// 模块装配入口：桥管理、跨桥取数与发送，加 Aurora 页面协议三条指令（describe / actions / data）。
 /// </summary>
 /// <remarks>
-/// 模块只是桥的消费方：指令一律转成对统一桥 HTTP API 的调用（契约见 2026-036-MessageHub 的
-/// b-Code-Bridge.md），自己不存消息、不解析平台格式。桥答不上来时如实失败并把原因带出来，
+/// 指令一律转成对统一桥 HTTP API 的调用（契约见 2026-036-MessageHub 的 b-Code-Bridge.md），
+/// 自己不存消息、不解析平台格式。过渡期可按 tunnel.json 管理本机到云端桥的 SSH 转发；
+/// Vulcan 接管连接后可移除这层而不改变桥指令和页面协议。桥答不上来时如实失败并把原因带出来，
 /// 不返回上次的旧数据。
 /// </remarks>
 public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
@@ -16,12 +17,15 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
     private const string Hidden = "Aurora 页面内部协议，不对远程消费面暴露";
 
     private FamaLive? _live;
+    private FamaTunnel? _tunnel;
 
     /// <summary>宿主在装载时注入权威指令总线与命令注册器；装上就开始实时接收。</summary>
     public void Attach(IModuleContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
         var state = new FamaState(context);
+        _tunnel = FamaTunnel.Start(
+            context.Environment.DataDirectory, context.Environment.RunMode, state.Bridges());
         var live = new FamaLive(context, state);
         _live = live;
         context.RegisterCommands(registry => Register(registry, state, live));
@@ -33,11 +37,31 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
     {
         _live?.Dispose();
         _live = null;
+        _tunnel?.Dispose();
+        _tunnel = null;
     }
 
     internal static void Register(ICommandRegistrar registry, FamaState state, FamaLive live)
     {
         const string domain = FamaIdentity.Domain;
+
+        registry.Register(new CommandDescriptor
+        {
+            Name = domain + ".ui.image", Domain = domain, CommandClass = "ui",
+            Summary = "读取配置桥的图片附件并返回 base64，供聊天图片预览使用。",
+            Example = domain + ".ui.image bridge=qq path=/api/v1/attachments/example.png",
+            Level = CommandLevel.Run, Readonly = true, HiddenReason = Hidden,
+            Parameters =
+            [
+                new() { Name = "bridge", Description = "桥配置 id", Required = true },
+                new() { Name = "path", Description = "本桥 /api/v1/attachments/ 下的相对图片路径", Required = true },
+            ],
+            Handler = context => GuardAsync(async () =>
+            {
+                var bytes = await state.ImageAsync(context.RequireString("bridge"), context.RequireString("path"), context.Cancellation).ConfigureAwait(false);
+                return CommandResult.Ok("图片", new Dictionary<string, string> { ["base64"] = Convert.ToBase64String(bytes) });
+            }),
+        });
 
         registry.Register(new CommandDescriptor
         {
@@ -330,9 +354,9 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".msg.send",
             Domain = domain,
             CommandClass = "msg",
-            Summary = "往某个会话发一条文字消息；桥不支持发送时直接说明，不假装成功。",
-            Example = domain + ".msg.send bridge=qq conversation=qq:private:10001 text=收到",
-            Level = CommandLevel.Ask,
+            Summary = "往某个会话发文字或一张图片；桥不支持发送时直接说明，不假装成功。",
+            Example = domain + ".msg.send bridge=qq conversation=qq:private:10001 text=收到 file=C:\\Pictures\\a.png",
+            Level = CommandLevel.Run,
             Parameters =
             [
                 new ParameterSpec
@@ -352,23 +376,28 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                 new ParameterSpec
                 {
                     Name = "text",
-                    Description = "正文，任意非空白字符串；一条指令只发一条文字消息，附件暂不支持。",
-                    Required = true,
+                    Description = "正文；可与 file 二选一，两个都为空会被拒绝。",
+                    Required = false,
                     Position = 2,
                 },
+                new ParameterSpec
+                {
+                    Name = "file",
+                    Description = "可选的本机图片路径，模块会按桥契约读成 base64（上限 8 MiB）。",
+                    Required = false,
+                },
             ],
-            ConfirmPrompt = context =>
-                $"确认把这条消息发给 {context.GetString("conversation")}？\n{context.GetString("text")}",
             Handler = context => GuardAsync(async () =>
             {
-                var text = context.RequireString("text").Trim();
-                if (text.Length == 0)
-                    return CommandResult.Fail("text 不能是空白。");
+                var text = context.GetString("text")?.Trim() ?? "";
+                var file = context.GetString("file")?.Trim();
+                if (text.Length == 0 && string.IsNullOrWhiteSpace(file))
+                    return CommandResult.Fail("text 和 file 至少要有一个非空。");
 
                 var sent = await state.SendAsync(
                     context.RequireString("bridge").Trim(),
                     context.RequireString("conversation").Trim(),
-                    text, context.Cancellation).ConfigureAwait(false);
+                    text, file, context.Cancellation).ConfigureAwait(false);
                 return CommandResult.Ok($"已发出：{sent.Text}", FamaState.MessageRows([sent]));
             }),
         });
@@ -430,7 +459,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".ui.data",
             Domain = domain,
             CommandClass = "ui",
-            Summary = "返回页面行集（桥 / 会话卡片 / 气泡消息）；桥视图留给排障。",
+            Summary = "返回页面行集（桥 / 会话卡片 / 气泡消息 / 来源候选）；桥视图留给排障。",
             Example = domain + ".ui.data view=conversation",
             Level = CommandLevel.Run,
             Readonly = true,
@@ -440,9 +469,9 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                 new ParameterSpec
                 {
                     Name = "view",
-                    Description = "取哪组行：bridge 桥、conversation 会话、message 消息。",
+                    Description = "取哪组行：bridge 桥、conversation 会话、message 消息、source 来源候选。",
                     Required = false,
-                    AllowedValues = [FamaPage.ViewBridge, FamaPage.ViewConversation, FamaPage.ViewMessage],
+                    AllowedValues = [FamaPage.ViewBridge, FamaPage.ViewConversation, FamaPage.ViewMessage, FamaPage.ViewSource],
                     Position = 0,
                 },
                 new ParameterSpec
@@ -459,6 +488,12 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                 },
                 new ParameterSpec
                 {
+                    Name = "source",
+                    Description = "通讯录来源选择项；省略或全部来源表示聚合全部桥，其余值取 source 视图的 value。",
+                    Required = false,
+                },
+                new ParameterSpec
+                {
                     Name = "q",
                     Description = "会话标题搜索词；空串或省略时显示全部会话。",
                     Required = false,
@@ -468,6 +503,8 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             {
                 switch (context.GetString("view")?.Trim().ToLowerInvariant())
                 {
+                    case FamaPage.ViewSource:
+                        return CommandResult.Ok("来源", state.SourceRows());
                     case FamaPage.ViewBridge:
                     {
                         var rows = await state.BridgeRowsAsync(context.Cancellation).ConfigureAwait(false);
@@ -477,7 +514,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
                     case FamaPage.ViewConversation:
                     {
                         var gather = await state.ConversationsAsync(
-                            context.GetString("bridge"), context.GetString("q"), null, FamaPage.PageLimit,
+                            state.SourceBridge(context.GetString("source")) ?? context.GetString("bridge"), context.GetString("q"), null, FamaPage.PageLimit,
                             context.Cancellation).ConfigureAwait(false);
                         if (gather.AllFailed)
                             return CommandResult.Fail(string.Join("；", gather.Problems));
@@ -502,7 +539,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
 
                     default:
                         return CommandResult.Fail(
-                            $"未知 view；支持 {FamaPage.ViewBridge} / {FamaPage.ViewConversation} / {FamaPage.ViewMessage}");
+                            $"未知 view；支持 {FamaPage.ViewBridge} / {FamaPage.ViewConversation} / {FamaPage.ViewMessage} / {FamaPage.ViewSource}");
                 }
             }),
         });
