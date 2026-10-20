@@ -173,16 +173,20 @@ internal sealed class FamaState
 
     /// <summary>REQ-FAMA-002：本地未读优先，每组再按最新消息倒序，时间相同时按身份保持稳定。</summary>
     internal IReadOnlyList<FamaConversation> OrderConversations(IEnumerable<FamaConversation> items)
-        => items.Select(item => item with { BridgeUnread = item.Unread, Unread = _readState.Unread(item) })
+    {
+        var list = items.ToList();
+        _readState.Observe(list);
+        return list.Select(item => item with { BridgeUnread = item.Unread, Unread = _readState.Unread(item) })
             .OrderByDescending(item => item.Unread > 0).ThenByDescending(item => item.LastTsMs)
             .ThenBy(item => item.Bridge, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.ConversationId, StringComparer.Ordinal).ToList();
+    }
 
     /// <summary>只确认已经成功显示的消息；迟到的旧水位不能吞掉更晚的新消息。</summary>
     public async Task MarkReadAsync(string bridgeId, string conversation, long through, long last, int unread)
     {
         var bridge = Require(bridgeId);
-        if (last <= 0 || through < last || unread <= 0) return;
+        if (last <= 0 || through < last || unread < 0) return;
         if (_readState.Mark(bridge.Id, conversation, last, unread))
             await RefreshAsync(FamaPage.ConversationTableId).ConfigureAwait(false);
     }

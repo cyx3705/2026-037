@@ -466,6 +466,25 @@ static async Task TestLocalRead()
         Equal("", rows[0]["unread"]);
         Equal("4", rows[0]["bridge_unread"]);
         Equal("3000", rows[0]["last_ts_ms"]);
+
+        // QQ / 钉钉桥没有 bridge unread 能力：首次观察建立本地基线，随后时间水位前进就提醒。
+        var local = new FamaState(new FakeContext(directory));
+        local.AddBridge("qq", "qq", "QQ", "http://127.0.0.1:8010", null);
+        var qq = new FamaConversation("qq", "qq:group:1", "通知群", "group", 0, 1000, "旧消息", 0)
+        {
+            Bridge = "qq",
+        };
+        Equal(0, local.OrderConversations([qq])[0].Unread);
+        var qqNext = qq with { LastTsMs = 2000, LastText = "新消息" };
+        Equal(1, local.OrderConversations([qqNext])[0].Unread);
+        var qqRows = FamaState.ConversationRows(local.OrderConversations([qqNext]));
+        Equal("1", qqRows[0]["unread"]);
+        Equal("0", qqRows[0]["bridge_unread"]);
+        await local.MarkReadAsync("qq", "qq:group:1", 2000, 2000, 0);
+        Equal(0, local.OrderConversations([qqNext])[0].Unread);
+        var reopenedLocal = new FamaState(new FakeContext(directory));
+        Equal(0, reopenedLocal.OrderConversations([qqNext])[0].Unread);
+        Equal(1, reopenedLocal.OrderConversations([qqNext with { LastTsMs = 3000 }])[0].Unread);
     }
     finally { Cleanup(directory); }
 }
