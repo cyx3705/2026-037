@@ -48,7 +48,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
         registry.Register(new CommandDescriptor
         {
             Name = domain + ".ui.image", Domain = domain, CommandClass = "ui",
-            Summary = "读取配置桥的图片附件并返回 base64，供聊天图片预览使用。",
+            Summary = "读取消息桥图片附件供页面预览",
             Example = domain + ".ui.image bridge=qq path=/api/v1/attachments/example.png",
             Level = CommandLevel.Run, Readonly = true, HiddenReason = Hidden,
             Parameters =
@@ -92,7 +92,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".bridge.add",
             Domain = domain,
             CommandClass = "bridge",
-            Summary = "新增或更新一个消息桥的接入配置，写进模块数据目录的 bridges.json。",
+            Summary = "新增或更新消息桥的接入配置",
             Example = domain + ".bridge.add id=qq platform=qq title=QQ baseurl=http://127.0.0.1:8010 token=abc123",
             Level = CommandLevel.Run,
             Parameters =
@@ -148,7 +148,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".bridge.remove",
             Domain = domain,
             CommandClass = "bridge",
-            Summary = "从配置里移除一个消息桥（只删本模块的配置，不动桥容器与桥里的数据）。",
+            Summary = "移除本地消息桥配置，保留平台数据",
             Example = domain + ".bridge.remove id=qq",
             Level = CommandLevel.Run,
             Parameters =
@@ -219,7 +219,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".conv.list",
             Domain = domain,
             CommandClass = "conv",
-            Summary = "列出各平台会话，本地未读优先、组内按最后消息倒序；指定 bridge 就只看那个桥。",
+            Summary = "按未读和最近消息列出各平台会话",
             Example = domain + ".conv.list limit=20",
             Level = CommandLevel.Run,
             Readonly = true,
@@ -276,7 +276,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".conv.read",
             Domain = domain,
             CommandClass = "conv",
-            Summary = "记录 Fama 本地已读水位并更新红点，不修改平台端已读状态。",
+            Summary = "标记会话为本地已读，不改平台状态",
             Example = domain + ".conv.read bridge=feishu conversation=123 through=1791537512673 last=1791537512673 unread=1",
             Level = CommandLevel.Run,
             HiddenReason = "由消息时间线成功显示最新内容后调用的本地已读动作",
@@ -305,7 +305,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".msg.list",
             Domain = domain,
             CommandClass = "msg",
-            Summary = "列出某个会话最近的消息，按时间升序；会话主键取 conv.list 里 conversation 那列。",
+            Summary = "按时间顺序列出会话的最近消息",
             Example = domain + ".msg.list bridge=qq conversation=qq:group:123456 limit=50",
             Level = CommandLevel.Run,
             Readonly = true,
@@ -354,7 +354,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".msg.send",
             Domain = domain,
             CommandClass = "msg",
-            Summary = "往某个会话发文字或一张图片；桥不支持发送时直接说明，不假装成功。",
+            Summary = "向指定会话发送文字或一张图片",
             Example = domain + ".msg.send bridge=qq conversation=qq:private:10001 text=收到 file=C:\\Pictures\\a.png",
             Level = CommandLevel.Run,
             Parameters =
@@ -407,7 +407,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".recv.auto",
             Domain = domain,
             CommandClass = "recv",
-            Summary = "开关自动接收：开着时各桥来新消息就自动刷新通讯录与消息；关掉后断开实时流，只能手动刷新。",
+            Summary = "查看或设置消息桥的自动接收",
             Example = domain + ".recv.auto on=false",
             Level = CommandLevel.Run,
             Parameters =
@@ -439,7 +439,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".recv.refresh",
             Domain = domain,
             CommandClass = "recv",
-            Summary = "重连各桥的实时流并重取通讯录与消息两张表；收消息卡住时用，自动接收关着时只重取不重连。",
+            Summary = "重取通讯录与消息，必要时重连实时流",
             Example = domain + ".recv.refresh",
             Level = CommandLevel.Run,
             Handler = _ => GuardAsync(async () =>
@@ -459,7 +459,7 @@ public sealed class HistoryFamaModule : IModuleContextAware, IDisposable
             Name = domain + ".ui.data",
             Domain = domain,
             CommandClass = "ui",
-            Summary = "返回页面行集（桥 / 会话卡片 / 气泡消息 / 来源候选）；桥视图留给排障。",
+            Summary = "返回消息页面所需的桥、会话和消息行",
             Example = domain + ".ui.data view=conversation",
             Level = CommandLevel.Run,
             Readonly = true,
